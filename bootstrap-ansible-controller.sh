@@ -2,24 +2,35 @@
 #
 # Ansible Controller Bootstrap Script
 # Installs the prerequisites for running `ansible-playbook` against a fleet
-# from this host (ansible-core, python3, openssh-client, Doppler CLI), and
-# optionally joins the host to a Tailscale network so the controller can
-# reach fleet hosts by MagicDNS name.
+# from this host (ansible-core, python3, openssh-client, python3-pexpect,
+# Doppler CLI), optionally joins the host to a Tailscale network so the
+# controller can reach fleet hosts by MagicDNS name, ensures the controller
+# has its own SSH keypair, and — if you pass a target list — pushes that
+# public key out to each managed host so Ansible can reach them without a
+# password.
 #
 # This script deliberately stops short of running any playbook — it only
 # gets a bare host to the point where a private automation repo's Ansible
-# can take over. No secrets are read or written by this script beyond an
-# optional TS_AUTHKEY passed in the environment.
+# can take over. No secrets are read or written by this script beyond
+# optional environment variables (TS_AUTHKEY, ANSIBLE_TARGET_PASSWORD) —
+# never written to a file, never logged.
 #
 # Usage:
-#   Export your key first (optional for zero-touch headless setup):
-#     export TS_AUTHKEY="tskey-auth-..."
+#   Export what you need first (all optional):
+#     export TS_AUTHKEY="tskey-auth-..."             # zero-touch Tailscale join
+#     export ANSIBLE_TARGETS="root@10.0.0.11 root@10.0.0.12"   # space-separated user@host list
+#     export ANSIBLE_TARGET_PASSWORD="..."           # only needed for a non-interactive ssh-copy-id
 #   Then run:
 #     ./bootstrap-ansible-controller.sh
 #
 # One-liner (no clone needed — this repo is public):
 #   curl -fsSL https://raw.githubusercontent.com/thilagan-digital/bare-metal-bootstrap/main/bootstrap-ansible-controller.sh \
-#     | sudo TS_AUTHKEY=tskey-auth-xxxx bash
+#     | sudo TS_AUTHKEY=tskey-auth-xxxx ANSIBLE_TARGETS="root@10.0.0.11 root@10.0.0.12" bash
+#
+# Omit ANSIBLE_TARGETS entirely to skip SSH provisioning (e.g. if it's
+# already set up, or you'd rather run ssh-copy-id by hand). Omit
+# ANSIBLE_TARGET_PASSWORD to be prompted interactively per host instead of
+# supplying it non-interactively via sshpass.
 
 set -euo pipefail
 
@@ -32,8 +43,9 @@ RED='\033[0;31m'
 
 echo -e "${GREEN}==> Initializing Ansible Controller Bootstrap Sequence...${NC}"
 
-# 1. Ansible-core, python3, openssh-client
-PACKAGES=(ansible-core python3 openssh-client)
+# 1. Ansible-core, python3, openssh-client, pexpect (drives pvecm's
+#    interactive prompts via ansible.builtin.expect)
+PACKAGES=(ansible-core python3 openssh-client python3-pexpect)
 missing_packages=()
 for pkg in "${PACKAGES[@]}"; do
     dpkg -s "$pkg" >/dev/null 2>&1 || missing_packages+=("$pkg")
@@ -73,6 +85,42 @@ elif [ -n "${TS_AUTHKEY:-}" ]; then
 else
     echo -e "${YELLOW}==> No auth key provided. Initializing standard interactive link...${NC}"
     tailscale up
+fi
+
+# 4. This controller's own SSH keypair — Ansible connects to managed hosts
+#    over SSH, so it needs one. Generated once, reused on every run.
+SSH_KEY="${SSH_KEY_PATH:-$HOME/.ssh/id_ed25519}"
+if [ -f "${SSH_KEY}" ]; then
+    echo -e "${GREEN}==> SSH keypair already present (${SSH_KEY})${NC}"
+else
+    echo -e "${YELLOW}==> Generating SSH keypair (${SSH_KEY})...${NC}"
+    mkdir -p "$(dirname "${SSH_KEY}")"
+    ssh-keygen -t ed25519 -N "" -f "${SSH_KEY}" -C "ansible-controller@$(hostname)"
+fi
+
+# 5. Optional: push this controller's public key to each managed host, so
+#    Ansible can reach them without a password. Skipped entirely if
+#    ANSIBLE_TARGETS isn't set — real hostnames/IPs are fleet-specific and
+#    never hard-coded here.
+if [ -n "${ANSIBLE_TARGETS:-}" ]; then
+    echo -e "${YELLOW}==> Provisioning SSH access to: ${ANSIBLE_TARGETS}${NC}"
+    if ! command -v ssh-copy-id >/dev/null 2>&1; then
+        apt-get install -y -qq openssh-client
+    fi
+    if [ -n "${ANSIBLE_TARGET_PASSWORD:-}" ] && ! command -v sshpass >/dev/null 2>&1; then
+        apt-get install -y -qq sshpass
+    fi
+    for target in ${ANSIBLE_TARGETS}; do
+        echo -e "${YELLOW}    -> ${target}${NC}"
+        if [ -n "${ANSIBLE_TARGET_PASSWORD:-}" ]; then
+            sshpass -p "${ANSIBLE_TARGET_PASSWORD}" ssh-copy-id -o StrictHostKeyChecking=accept-new -i "${SSH_KEY}.pub" "${target}"
+        else
+            ssh-copy-id -o StrictHostKeyChecking=accept-new -i "${SSH_KEY}.pub" "${target}"
+        fi
+    done
+    echo -e "${GREEN}==> SSH access provisioned for all listed targets${NC}"
+else
+    echo -e "${YELLOW}==> ANSIBLE_TARGETS not set — skipping SSH key provisioning${NC}"
 fi
 
 echo -e "${GREEN}==> Setup Complete!${NC}"

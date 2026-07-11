@@ -107,7 +107,7 @@ self-contained and runs with a single anonymous `curl | bash`:
 | Script | What it does | What it leaves for your private automation |
 |---|---|---|
 | [`bootstrap-node.sh`](bootstrap-node.sh) | Prepares a bare Proxmox VE 9.x node (repos, nag, core deps, Tailscale) — Phase 1 above | Cluster formation, storage, VM/LXC provisioning (the Ansible pipeline / your IaC) |
-| [`bootstrap-ansible-controller.sh`](bootstrap-ansible-controller.sh) | Installs `ansible-core`, `python3`, `openssh-client`, the Doppler CLI, and joins Tailscale | Galaxy collections, inventory, playbooks, secrets |
+| [`bootstrap-ansible-controller.sh`](bootstrap-ansible-controller.sh) | Installs `ansible-core`, `python3`, `openssh-client`, `python3-pexpect`, the Doppler CLI, joins Tailscale, generates this host's SSH keypair, and (given `ANSIBLE_TARGETS`) pushes that key to each managed host | Galaxy collections, inventory, playbooks, secrets |
 | [`bootstrap-nas-base.sh`](bootstrap-nas-base.sh) | Installs core apt/TLS packages + Docker, and joins Tailscale | Samba/NFS/Cockpit configuration, add-on containers |
 | [`bootstrap-tailscale-exit-node.sh`](bootstrap-tailscale-exit-node.sh) | Installs Tailscale, enables IP forwarding, advertises the host as an exit node, tunes UDP GRO throughput, installs fail2ban + unattended-upgrades | Tailscale ACLs, DNS filtering config, monitoring |
 | [`bootstrap-adguard-home.sh`](bootstrap-adguard-home.sh) | Installs AdGuard Home (DNS ad/tracker blocker) and starts it as a systemd service | All AdGuard config (upstream DNS, blocklists, admin password) — set through its own web wizard |
