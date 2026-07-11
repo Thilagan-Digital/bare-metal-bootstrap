@@ -1,0 +1,23 @@
+---
+- name: Join Worker Nodes to Cluster
+  hosts: worker_nodes
+  become: true
+  vars:
+    control_ip: "{{ hostvars[groups['control_node'][0]]['ansible_default_ipv4']['address'] }}"
+  tasks:
+    - name: Check cluster membership
+      command: pvecm status
+      register: member_status
+      failed_when: false
+      changed_when: false
+
+    - name: Join cluster via SSH authentication
+      # Requires the `pexpect` python module on the control machine
+      # (pip install pexpect) — the ansible.builtin.expect module drives
+      # pvecm's interactive password + host-key prompts.
+      expect:
+        command: "pvecm add {{ control_ip }} --link0 {{ ansible_default_ipv4.address }} --use_ssh"
+        responses:
+          (?i)password: "{{ pve_root_password }}"
+          (?i)are you sure you want to continue connecting: "yes"
+      when: member_status.rc != 0

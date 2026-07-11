@@ -1,0 +1,29 @@
+---
+# Example group_vars — COPY THIS into your private inventory and adapt.
+# All values are placeholders; nothing here is environment-specific.
+
+cluster_name: "pve-cluster"
+
+# Passwords are referenced from an encrypted Ansible Vault file, never stored
+# in plaintext. Create one alongside this file with:
+#   ansible-vault create private-inventory/group_vars/vault.yml
+# and define vault_pve_root_password / vault_qdevice_root_password there.
+pve_root_password: "{{ vault_pve_root_password }}"
+qdevice_root_password: "{{ vault_qdevice_root_password }}"
+
+# Cluster-wide shared storage tiers, added on the control node and propagated
+# to every member via pmxcfs. Point `server` at your NFS/SMB host.
+pve_storage_pools:
+  # Fast NFS share for active VM disks & LXC rootfs
+  - name: "nas-vms"
+    server: "10.10.10.30"
+    export: "/export/proxmox/vms"
+    content: "images,rootdir"
+    options: "vers=4.1,hard,timeo=600,retrans=2"
+
+  # High-capacity NFS share for ISOs, templates, and backups
+  - name: "nas-backups"
+    server: "10.10.10.30"
+    export: "/export/proxmox/backups"
+    content: "backup,iso,vztmpl"
+    options: "vers=4.1,hard,timeo=600"
