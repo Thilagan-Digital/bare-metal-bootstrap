@@ -3,7 +3,8 @@
 # Generic Proxmox VE 9.x (Trixie) Bare-Metal Node Bootstrap Script
 #
 # Phase 1 of the bare-metal -> cluster pipeline: run this locally on each
-# fresh Proxmox VE 9.x install to fix the DEB822 repositories, silence the
+# fresh Proxmox VE 9.x install to fix the apt repositories (DEB822 and any
+# legacy .list leftovers from an in-place upgrade), silence the
 # subscription nag, install the core utilities the cluster automation needs
 # (python3 for Ansible, qemu-guest-agent, ifupdown2, jq), and join a
 # Tailscale overlay network. After every node has run this, drive the
@@ -27,17 +28,24 @@ set -euo pipefail
 
 echo "==> 1. Disabling default enterprise repositories..."
 for f in pve-enterprise ceph; do
+    # Modern DEB822 format (PVE 8+/Trixie default)
     if [ -f "/etc/apt/sources.list.d/${f}.sources" ]; then
         mv "/etc/apt/sources.list.d/${f}.sources" "/etc/apt/sources.list.d/${f}.sources.bak"
         echo "    disabled ${f}.sources"
     fi
+    # Legacy one-line format (PVE 7/8 upgrades that never migrated)
+    if [ -f "/etc/apt/sources.list.d/${f}.list" ]; then
+        sed -i 's/^deb/#deb/g' "/etc/apt/sources.list.d/${f}.list"
+        echo "    disabled ${f}.list"
+    fi
 done
 
 echo "==> 2. Configuring community no-subscription repository..."
+VERSION_CODENAME="$(grep "VERSION_CODENAME=" /etc/os-release | cut -d= -f2)"
 cat <<EOF > /etc/apt/sources.list.d/pve-no-subscription.sources
 Types: deb
 URIs: http://download.proxmox.com/debian/pve
-Suites: trixie
+Suites: ${VERSION_CODENAME}
 Components: pve-no-subscription
 Architectures: amd64
 Comment: Proxmox VE community no-subscription repository
