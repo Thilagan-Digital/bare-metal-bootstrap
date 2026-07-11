@@ -3,7 +3,7 @@
 # Ansible Controller Bootstrap Script
 # Installs the prerequisites for running `ansible-playbook` against a fleet
 # from this host (ansible-core, python3, openssh-client, python3-pexpect,
-# Doppler CLI), optionally joins the host to a Tailscale network so the
+# git, Doppler CLI), optionally joins the host to a Tailscale network so the
 # controller can reach fleet hosts by MagicDNS name, ensures the controller
 # has its own SSH keypair, and — if you pass a target list — pushes that
 # public key out to each managed host so Ansible can reach them without a
@@ -51,11 +51,13 @@ RED='\033[0;31m'
 echo -e "${GREEN}==> Initializing Ansible Controller Bootstrap Sequence...${NC}"
 
 # 1. Ansible-core, python3, openssh-client, pexpect (drives pvecm's
-#    interactive prompts via ansible.builtin.expect), and gnupg/gpgv — a
-#    minimal image (e.g. a fresh Proxmox VE install) often lacks gpgv, which
-#    the Doppler CLI installer in step 2 requires for signature verification
-#    even though gnupg itself may already be present.
-PACKAGES=(ansible-core python3 openssh-client python3-pexpect gnupg gpgv)
+#    interactive prompts via ansible.builtin.expect), gnupg/gpgv — a minimal
+#    image (e.g. a fresh Proxmox VE install) often lacks gpgv, which the
+#    Doppler CLI installer in step 2 requires for signature verification
+#    even though gnupg itself may already be present — and git, needed to
+#    clone the automation repos (this one and your private inventory) once
+#    this controller is set up.
+PACKAGES=(ansible-core python3 openssh-client python3-pexpect gnupg gpgv git)
 missing_packages=()
 for pkg in "${PACKAGES[@]}"; do
     dpkg -s "$pkg" >/dev/null 2>&1 || missing_packages+=("$pkg")
