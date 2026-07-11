@@ -43,6 +43,10 @@ actually need secrets or fleet-specific configuration.
 
 ## Contributing
 
-Keep scripts here **idempotent** (safe to re-run) and **secret-free** — no
-committed tokens, keys, or credentials. Anything that needs a secret or
-fleet-specific state belongs in your private automation repo instead.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for branch/commit conventions,
+shell style, how to test changes locally, and the ground rules (no secrets,
+idempotent, self-contained single-file scripts).
+
+## License
+
+[MIT](LICENSE)
