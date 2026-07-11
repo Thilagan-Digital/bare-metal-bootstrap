@@ -4,7 +4,11 @@
   become: true
   tasks:
     - name: Check if QDevice is already registered
-      command: pvecm qdevice status
+      # NB: `pvecm qdevice status` is NOT a valid subcommand (it always exits
+      # non-zero), so it can't gate the setup. A configured QDevice is recorded
+      # as a `device { ... }` block in the quorum section of corosync.conf —
+      # key idempotency off that instead so re-runs skip cleanly.
+      command: grep -qE '^[[:space:]]*device[[:space:]]*\{' /etc/pve/corosync.conf
       register: qdevice_status
       failed_when: false
       changed_when: false

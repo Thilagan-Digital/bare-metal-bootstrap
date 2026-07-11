@@ -12,9 +12,11 @@
       changed_when: false
 
     - name: Join cluster via SSH authentication
-      # Requires the `pexpect` python module on the control machine
-      # (pip install pexpect) — the ansible.builtin.expect module drives
-      # pvecm's interactive password + host-key prompts.
+      # `ansible.builtin.expect` runs on the MANAGED node, so `pexpect` must be
+      # installed on each worker (not the control machine): apt install
+      # python3-pexpect / pip install pexpect. It drives pvecm's interactive
+      # password + host-key prompts. `--use_ssh` also needs this worker's root
+      # able to SSH to the control node (key or password).
       expect:
         command: "pvecm add {{ control_ip }} --link0 {{ ansible_default_ipv4.address }} --use_ssh"
         responses:
