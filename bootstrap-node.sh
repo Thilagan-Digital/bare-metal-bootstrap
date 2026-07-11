@@ -37,9 +37,11 @@ for f in pve-enterprise ceph; do
         sed -i 's/^deb/#deb/g' "/etc/apt/sources.list.d/${f}.list"
         echo "    disabled ${f}.list"
     fi
-    # Modern DEB822 format (PVE 8+/Trixie default)
+    # Modern DEB822 format (PVE 8+/Trixie default). "Enabled:" is frequently
+    # omitted entirely (it defaults to yes), so sed-patching it is unreliable
+    # — take the file out of sources.list.d/ instead so apt never reads it.
     if [ -f "/etc/apt/sources.list.d/${f}.sources" ]; then
-        sed -i 's/^Enabled: yes/Enabled: no/g' "/etc/apt/sources.list.d/${f}.sources"
+        mv "/etc/apt/sources.list.d/${f}.sources" "/etc/apt/sources.list.d/${f}.sources.disabled"
         echo "    disabled ${f}.sources"
     fi
 done
@@ -59,6 +61,7 @@ URIs: http://download.proxmox.com/debian/pve
 Suites: ${VERSION_CODENAME}
 Components: pve-no-subscription
 Architectures: amd64
+Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
 Comment: Proxmox VE community no-subscription repository
 EOF
 
