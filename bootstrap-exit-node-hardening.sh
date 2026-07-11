@@ -75,7 +75,7 @@ log()  { echo -e "${GREEN}==> $*${NC}"; }
 warn() { echo -e "${YELLOW}==> warning: $*${NC}" >&2; }
 die()  { echo -e "${RED}==> error: $*${NC}" >&2; exit 1; }
 
-[ "$(id -u)" -eq 0 ] || die "run as root (sudo ./bootstrap-exit-node-hardening.sh)"
+[ "$(id -u)" -eq 0 ] || die "run as root (./bootstrap-exit-node-hardening.sh, or sudo ./bootstrap-exit-node-hardening.sh if not already root)"
 command -v apt-get >/dev/null 2>&1 || die "this script targets Debian/Ubuntu (apt-get not found)"
 
 echo -e "${GREEN}==> Initializing Exit-Node Hardening Bootstrap Sequence...${NC}"

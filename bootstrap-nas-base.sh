@@ -27,7 +27,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 
-[ "$(id -u)" -eq 0 ] || { echo -e "${RED}==> Run as root (sudo ./bootstrap-nas-base.sh)${NC}" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || { echo -e "${RED}==> Run as root (./bootstrap-nas-base.sh, or sudo ./bootstrap-nas-base.sh if not already root)${NC}" >&2; exit 1; }
 
 echo -e "${GREEN}==> Initializing NAS Baseline Bootstrap Sequence...${NC}"
 
