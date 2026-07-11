@@ -1,0 +1,21 @@
+---
+- name: Configure Cluster-Wide Shared Storage
+  hosts: control_node
+  become: true
+  tasks:
+    - name: Provision NFS/SMB storage pools
+      # Storage added on the control node propagates cluster-wide via the
+      # Proxmox cluster filesystem (pmxcfs). Define pve_storage_pools in your
+      # private group_vars — see inventory.example/group_vars/all.yml.
+      command: >
+        pvesm add nfs {{ item.name }}
+        --server {{ item.server }}
+        --export {{ item.export }}
+        --content {{ item.content }}
+        --options {{ item.options | default('vers=4.1,hard,timeo=600') }}
+      loop: "{{ pve_storage_pools | default([]) }}"
+      register: storage_result
+      failed_when:
+        - storage_result.rc != 0
+        - "'already exists' not in storage_result.stderr"
+      changed_when: storage_result.rc == 0

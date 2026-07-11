@@ -57,15 +57,33 @@ for f in *.sh; do bash -n "$f"; done
 ```
 
 For anything that touches repo config, package sources, or networking
-(`bootstrap-pve.sh`, `bootstrap-nas-base.sh`), test end-to-end on a
+(`bootstrap-node.sh`, `bootstrap-nas-base.sh`), test end-to-end on a
 throwaway VM or spare hardware before merging — these scripts modify system
 state and are hard to unwind from CI.
+
+For the Ansible pipeline, validate playbook syntax before opening a PR:
+
+```bash
+ansible-playbook --syntax-check -i inventory.example/hosts.ini site.yml
+```
 
 ## Adding a new bootstrap script
 
 - One script per device/role, named `bootstrap-<role>.sh`.
 - Add a row to the table in `README.md` describing what it does and what it
-  deliberately leaves for the private automation repo.
+  deliberately leaves for the private automation.
 - Keep the same structure as the existing scripts: shebang, header comment
   (purpose, usage, one-liner), root check, then numbered steps with
   `log`-style echoes.
+
+## Editing the cluster pipeline
+
+- Keep `bootstrap-node.sh`, `site.yml`, and everything under `playbooks/`
+  **generic** — no real hostnames, IPs, cluster names, or storage paths.
+  Every deployment-specific value belongs in a git-ignored
+  `private-inventory/`, referenced through variables with sensible
+  `default()` fallbacks.
+- Only ever add example values to `inventory.example/` — using placeholder
+  addresses (`10.10.10.x`) and placeholder hostnames (`pve-01`, `qdevice-01`).
+- Passwords are always referenced from an Ansible Vault variable
+  (`{{ vault_* }}`), never written into a playbook or committed file.

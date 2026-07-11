@@ -1,0 +1,23 @@
+# Local private inventory & secrets — NEVER commit these. Your real host
+# addresses, cluster names, and storage topology live here, kept out of the
+# public repo.
+private-inventory/
+inventory.local/
+
+# Ansible Vault files and vault-password files
+vault.yml
+*.vault
+*.vault.yml
+**/vault.yml
+.vault_pass
+.vault_pass.txt
+
+# Ansible run cruft
+*.retry
+
+# OS / editor cruft
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/

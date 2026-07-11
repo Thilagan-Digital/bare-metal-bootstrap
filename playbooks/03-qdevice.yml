@@ -1,0 +1,20 @@
+---
+- name: Setup External QDevice for Quorum Arbitration
+  hosts: control_node
+  become: true
+  tasks:
+    - name: Check if QDevice is already registered
+      command: pvecm qdevice status
+      register: qdevice_status
+      failed_when: false
+      changed_when: false
+
+    - name: Register QDevice server
+      # The QDevice host (e.g. a NAS) must have corosync-qnetd installed and
+      # reachable over SSH. Requires `pexpect` on the control machine.
+      expect:
+        command: "pvecm qdevice setup {{ hostvars[groups['qdevice'][0]]['ansible_host'] }}"
+        responses:
+          (?i)password: "{{ qdevice_root_password }}"
+          (?i)are you sure you want to continue connecting: "yes"
+      when: qdevice_status.rc != 0

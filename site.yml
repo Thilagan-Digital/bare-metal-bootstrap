@@ -1,0 +1,12 @@
+---
+# Master automation playbook — Phase 2 of the bare-metal -> cluster pipeline.
+# Run from a management machine against your own (git-ignored) private
+# inventory, once every node has been prepared with bootstrap-node.sh:
+#
+#   ansible-playbook -i private-inventory/hosts.ini site.yml --ask-vault-pass
+#
+# Each imported playbook is idempotent and independently re-runnable.
+- import_playbook: playbooks/01-cluster-init.yml
+- import_playbook: playbooks/02-join-workers.yml
+- import_playbook: playbooks/03-qdevice.yml
+- import_playbook: playbooks/04-storage.yml

@@ -1,0 +1,16 @@
+---
+- name: Initialize Proxmox Corosync Cluster
+  hosts: control_node
+  become: true
+  tasks:
+    - name: Check existing cluster status
+      command: pvecm status
+      register: pvecm_status
+      failed_when: false
+      changed_when: false
+
+    - name: Create cluster
+      command: >
+        pvecm create {{ cluster_name | default('pve-cluster') }}
+        --link0 {{ ansible_default_ipv4.address }}
+      when: pvecm_status.rc != 0
