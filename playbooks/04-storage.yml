@@ -15,7 +15,11 @@
         --options {{ item.options | default('vers=4.1,hard,timeo=600') }}
       loop: "{{ pve_storage_pools | default([]) }}"
       register: storage_result
+      # `pvesm add` reports an existing pool as "storage ID '<id>' already
+      # defined" (older/other paths may say "already exists"); treat either as
+      # success so the play is idempotent on re-runs.
       failed_when:
         - storage_result.rc != 0
+        - "'already defined' not in storage_result.stderr"
         - "'already exists' not in storage_result.stderr"
       changed_when: storage_result.rc == 0
