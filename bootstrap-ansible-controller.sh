@@ -16,21 +16,28 @@
 # never written to a file, never logged.
 #
 # Usage:
+#   Run as root — most minimal images (a fresh Proxmox VE install included)
+#   don't have `sudo` installed at all, so prefix with `sudo` only if you're
+#   not already root.
+#
 #   Export what you need first (all optional):
 #     export TS_AUTHKEY="tskey-auth-..."             # zero-touch Tailscale join
 #     export ANSIBLE_TARGETS="root@10.0.0.11 root@10.0.0.12"   # space-separated user@host list
-#     export ANSIBLE_TARGET_PASSWORD="..."           # only needed for a non-interactive ssh-copy-id
+#     export ANSIBLE_TARGET_PASSWORD="..."           # only if every target above shares ONE password
 #   Then run:
 #     ./bootstrap-ansible-controller.sh
 #
 # One-liner (no clone needed — this repo is public):
 #   curl -fsSL https://raw.githubusercontent.com/thilagan-digital/bare-metal-bootstrap/main/bootstrap-ansible-controller.sh \
-#     | sudo TS_AUTHKEY=tskey-auth-xxxx ANSIBLE_TARGETS="root@10.0.0.11 root@10.0.0.12" bash
+#     | TS_AUTHKEY=tskey-auth-xxxx ANSIBLE_TARGETS="root@10.0.0.11 root@10.0.0.12" bash
 #
 # Omit ANSIBLE_TARGETS entirely to skip SSH provisioning (e.g. if it's
 # already set up, or you'd rather run ssh-copy-id by hand). Omit
-# ANSIBLE_TARGET_PASSWORD to be prompted interactively per host instead of
-# supplying it non-interactively via sshpass.
+# ANSIBLE_TARGET_PASSWORD — the recommended default, especially across a
+# fleet of hosts that don't all share one root/user password — to be
+# prompted interactively per host instead of supplying one non-interactively
+# via sshpass; a single shared value is applied to EVERY target, so it will
+# silently fail (permission denied) on any host with a different password.
 
 set -euo pipefail
 
@@ -39,13 +46,16 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 
-[ "$(id -u)" -eq 0 ] || { echo -e "${RED}==> Run as root (sudo ./bootstrap-ansible-controller.sh)${NC}" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || { echo -e "${RED}==> Run as root (./bootstrap-ansible-controller.sh, or sudo ./bootstrap-ansible-controller.sh if not already root)${NC}" >&2; exit 1; }
 
 echo -e "${GREEN}==> Initializing Ansible Controller Bootstrap Sequence...${NC}"
 
 # 1. Ansible-core, python3, openssh-client, pexpect (drives pvecm's
-#    interactive prompts via ansible.builtin.expect)
-PACKAGES=(ansible-core python3 openssh-client python3-pexpect)
+#    interactive prompts via ansible.builtin.expect), and gnupg/gpgv — a
+#    minimal image (e.g. a fresh Proxmox VE install) often lacks gpgv, which
+#    the Doppler CLI installer in step 2 requires for signature verification
+#    even though gnupg itself may already be present.
+PACKAGES=(ansible-core python3 openssh-client python3-pexpect gnupg gpgv)
 missing_packages=()
 for pkg in "${PACKAGES[@]}"; do
     dpkg -s "$pkg" >/dev/null 2>&1 || missing_packages+=("$pkg")

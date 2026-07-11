@@ -36,7 +36,7 @@ log()  { echo -e "${GREEN}==> $*${NC}"; }
 warn() { echo -e "${YELLOW}==> warning: $*${NC}" >&2; }
 die()  { echo -e "${RED}==> error: $*${NC}" >&2; exit 1; }
 
-[ "$(id -u)" -eq 0 ] || die "run as root (sudo ./bootstrap-tailscale-exit-node.sh)"
+[ "$(id -u)" -eq 0 ] || die "run as root (./bootstrap-tailscale-exit-node.sh, or sudo ./bootstrap-tailscale-exit-node.sh if not already root)"
 
 SYSCTL_FILE="/etc/sysctl.d/99-tailscale.conf"
 

@@ -24,7 +24,7 @@
 
 set -euo pipefail
 
-[ "$(id -u)" -eq 0 ] || { echo "error: run as root (sudo ./bootstrap-node.sh)" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || { echo "error: run as root (./bootstrap-node.sh, or sudo ./bootstrap-node.sh if not already root — a fresh Proxmox VE install's root shell won't have sudo installed at all)" >&2; exit 1; }
 
 echo "==> 1. Detecting Debian OS codename..."
 VERSION_CODENAME="$(grep "VERSION_CODENAME=" /etc/os-release | cut -d= -f2)"

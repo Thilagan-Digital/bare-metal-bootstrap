@@ -33,7 +33,7 @@ log()  { echo -e "${GREEN}==> $*${NC}"; }
 warn() { echo -e "${YELLOW}==> warning: $*${NC}" >&2; }
 die()  { echo -e "${RED}==> error: $*${NC}" >&2; exit 1; }
 
-[ "$(id -u)" -eq 0 ] || die "run as root (sudo ./bootstrap-adguard-home.sh)"
+[ "$(id -u)" -eq 0 ] || die "run as root (./bootstrap-adguard-home.sh, or sudo ./bootstrap-adguard-home.sh if not already root)"
 
 INSTALL_DIR="/opt/AdGuardHome"
 WEB_PORT=3000
