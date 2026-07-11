@@ -1,0 +1,46 @@
+// Example Tailscale ACL policy for a homelab-style tailnet — a starting
+// point, not a drop-in. Paste into https://login.tailscale.com/admin/acls
+// and adapt.
+//
+// Format is HuJSON (JSON with comments/trailing commas), which is what the
+// admin console editor accepts.
+//
+// IMPORTANT: a tailnet with no policy allows everything. The moment you save
+// a policy, anything not explicitly accepted is DENIED — review carefully and
+// use the console's built-in tests/preview before saving. Keep an active
+// session to the admin console open until you have confirmed you can still
+// reach your devices.
+{
+	// Who may apply which tags to devices. Tag the exit-node/AdGuard hosts
+	// with tag:infra (Machines -> ... -> Edit ACL tags).
+	"tagOwners": {
+		"tag:infra": ["autogroup:admin"],
+	},
+
+	"acls": [
+		// Admins (you, from your laptop) can reach everything on infra hosts —
+		// including the AdGuard admin UI (3000/80) and Netdata (19999).
+		{"action": "accept", "src": ["autogroup:admin"], "dst": ["tag:infra:*"]},
+
+		// Every other tailnet device (e.g. your phone) can ONLY use infra
+		// hosts for DNS — no admin UI, no SSH, no monitoring.
+		{"action": "accept", "src": ["autogroup:member"], "dst": ["tag:infra:53"]},
+
+		// Everyone may route internet traffic through the exit node.
+		{"action": "accept", "src": ["autogroup:member"], "dst": ["autogroup:internet:*"]},
+
+		// Member devices can still talk to each other's own services.
+		// Tighten or remove this once you know what you actually need.
+		{"action": "accept", "src": ["autogroup:member"], "dst": ["autogroup:member:*"]},
+	],
+
+	// Tailscale SSH: admins only, with a re-auth check for root.
+	"ssh": [
+		{
+			"action": "check",
+			"src":    ["autogroup:admin"],
+			"dst":    ["tag:infra"],
+			"users":  ["autogroup:nonroot", "root"],
+		},
+	],
+}
