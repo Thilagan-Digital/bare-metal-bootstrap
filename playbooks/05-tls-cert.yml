@@ -1,0 +1,102 @@
+---
+# Issue + install a trusted Tailscale/Let's Encrypt TLS cert for each PVE
+# node's own MagicDNS name, so the API validates without -k/insecure=true
+# (Proxmox's stock self-signed cert's CN is the LAN hostname, not the
+# tailnet name we actually reach it by — see system-docs-hub#88). Runs on
+# every cluster node (control + workers); idempotent — `tailscale cert`
+# only re-issues near/at expiry, and `pvenode cert set --force` is safe to
+# repeat.
+#
+# Requires Tailscale HTTPS Certificates enabled tailnet-wide (admin
+# console -> DNS -> HTTPS Certificates), a one-time manual step.
+- name: Install trusted Tailscale TLS cert on Proxmox API (pveproxy)
+  hosts: pve_cluster
+  become: true
+  vars:
+    pve_tls_fqdn: "{{ inventory_hostname }}.{{ tailnet_domain }}"
+  tasks:
+    - name: Issue/renew the Tailscale cert for this node's MagicDNS name
+      command: tailscale cert --cert-file /tmp/{{ pve_tls_fqdn }}.crt --key-file /tmp/{{ pve_tls_fqdn }}.key {{ pve_tls_fqdn }}
+      register: ts_cert
+      changed_when: "'Wrote public cert' in ts_cert.stderr"
+
+    - name: Install the cert as the pveproxy (API/UI) cert and restart it
+      command: pvenode cert set /tmp/{{ pve_tls_fqdn }}.crt /tmp/{{ pve_tls_fqdn }}.key --force --restart
+      changed_when: true
+
+    - name: Remove the plaintext key/cert copies left in /tmp
+      file:
+        path: "/tmp/{{ pve_tls_fqdn }}.{{ item }}"
+        state: absent
+      loop: [crt, key]
+
+    - name: Verify the API now validates with full TLS verification (no -k)
+      # Plain curl, not the uri module: the uri module's SSL context on some
+      # PVE hosts' system Python doesn't pick up the OS trust store the way
+      # curl/openssl does, and reports a false CERTIFICATE_VERIFY_FAILED even
+      # though the cert is genuinely valid (confirmed with `curl -v`).
+      command: >-
+        curl -sS -o /dev/null -w '%{http_code}'
+        https://{{ pve_tls_fqdn }}:8006/api2/json/version
+      register: cert_check
+      changed_when: false
+      failed_when: cert_check.stdout != "401"
+      # 401 = reachable + auth-required + cert trusted. Any TLS failure
+      # (curl exits non-zero, or a non-401 code) fails here.
+
+    - name: Install the weekly renewal script
+      copy:
+        dest: /usr/local/sbin/renew-pve-cert.sh
+        mode: "0700"
+        content: |
+          #!/usr/bin/env bash
+          # Managed by bare-metal-bootstrap playbooks/05-tls-cert.yml.
+          # Re-issuing is a no-op until Tailscale decides the ~90-day cert
+          # needs renewal, so a weekly run is safe and catches it in time.
+          set -euo pipefail
+          FQDN="{{ pve_tls_fqdn }}"
+          cd /tmp
+          tailscale cert --cert-file "$FQDN.crt" --key-file "$FQDN.key" "$FQDN"
+          pvenode cert set "$FQDN.crt" "$FQDN.key" --force --restart
+          rm -f "$FQDN.crt" "$FQDN.key"
+
+    - name: Install the renewal systemd service
+      copy:
+        dest: /etc/systemd/system/renew-pve-cert.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Renew the Tailscale-issued Proxmox API TLS cert
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/renew-pve-cert.sh
+      notify: reload systemd for cert renewal
+
+    - name: Install the renewal systemd timer (weekly)
+      copy:
+        dest: /etc/systemd/system/renew-pve-cert.timer
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Weekly renewal of the Tailscale-issued Proxmox API TLS cert
+
+          [Timer]
+          OnCalendar=Sun *-*-* 03:00:00
+          Persistent=true
+
+          [Install]
+          WantedBy=timers.target
+      notify: reload systemd for cert renewal
+
+    - name: Enable + start the renewal timer
+      systemd:
+        name: renew-pve-cert.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+  handlers:
+    - name: reload systemd for cert renewal
+      systemd:
+        daemon_reload: true

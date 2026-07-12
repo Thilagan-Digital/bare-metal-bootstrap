@@ -4,6 +4,12 @@
 
 cluster_name: "pve-cluster"
 
+# Your tailnet's MagicDNS suffix (admin console -> DNS -> "tailnet name"),
+# used by playbooks/05-tls-cert.yml to build each node's own
+# <inventory_hostname>.<tailnet_domain> cert name. Requires Tailscale HTTPS
+# Certificates enabled tailnet-wide first.
+tailnet_domain: "example.ts.net"
+
 # Passwords are referenced from an encrypted Ansible Vault file, never stored
 # in plaintext. Create one alongside this file with:
 #   ansible-vault create private-inventory/group_vars/vault.yml
