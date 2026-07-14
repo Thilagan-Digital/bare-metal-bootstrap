@@ -1,24 +1,98 @@
 ---
-- name: Setup External QDevice for Quorum Arbitration
+- name: Check External QDevice registration and per-node cert coverage
   hosts: control_node
   become: true
   tasks:
-    - name: Check if QDevice is already registered
+    - name: Check if QDevice is already registered in corosync.conf
       # NB: `pvecm qdevice status` is NOT a valid subcommand (it always exits
       # non-zero), so it can't gate the setup. A configured QDevice is recorded
       # as a `device { ... }` block in the quorum section of corosync.conf —
       # key idempotency off that instead so re-runs skip cleanly.
       command: grep -qE '^[[:space:]]*device[[:space:]]*\{' /etc/pve/corosync.conf
-      register: qdevice_status
+      register: qdevice_registered
       failed_when: false
       changed_when: false
 
-    - name: Register QDevice server
+- name: Check each cluster node for its QDevice NSS certificate db
+  # A node that joins the cluster (playbook 02) AFTER the QDevice was already
+  # registered never gets a cert here — `pvecm qdevice setup` only issues
+  # certs to the nodes that are members at the moment it runs, and the
+  # control-node-only registration check above has no visibility into
+  # per-node cert state. Without this check, a late-joining worker's
+  # corosync-qdevice.service fails forever with "Can't init nss: bad
+  # database" and it never gets a QDevice vote (`NR` instead of `A,V,NMW`
+  # in `pvecm status`).
+  hosts: pve_cluster
+  become: true
+  tasks:
+    - name: Check for this node's QDevice NSS certificate db
+      stat:
+        path: /etc/corosync/qdevice/net/nssdb/cert9.db
+      register: qdevice_nssdb
+
+- name: Register/refresh External QDevice for Quorum Arbitration
+  hosts: control_node
+  become: true
+  vars:
+    qdevice_nodes_missing_cert: >-
+      {{ groups['pve_cluster']
+         | map('extract', hostvars)
+         | rejectattr('qdevice_nssdb.stat.exists')
+         | map(attribute='inventory_hostname')
+         | list }}
+  tasks:
+    - name: Register QDevice server (initial setup, or forced cert backfill)
       # The QDevice host (e.g. a NAS) must have corosync-qnetd installed and
       # reachable over SSH. Requires `pexpect` on the control machine.
+      #
+      # `--force` is required to re-run this once a device is already
+      # registered — without it, `pvecm qdevice setup` refuses outright. With
+      # it, the command still re-does the useful work (generate + distribute
+      # an NSS cert to every node currently in the cluster, including any
+      # that joined after the last run) before failing at its very last step
+      # ("add QDevice to cluster configuration") with "Qdevice already
+      # configured, must be removed before setting up new one!" — that
+      # specific failure is expected and benign on a backfill run, so it's
+      # excluded from failed_when below rather than treated as a real error.
       expect:
-        command: "pvecm qdevice setup {{ hostvars[groups['qdevice'][0]]['ansible_host'] }}"
+        command: >-
+          pvecm qdevice setup {{ hostvars[groups['qdevice'][0]]['ansible_host'] }}
+          {{ '--force' if qdevice_registered.rc == 0 else '' }}
         responses:
           (?i)password: "{{ qdevice_root_password }}"
           (?i)are you sure you want to continue connecting: "yes"
-      when: qdevice_status.rc != 0
+      register: qdevice_setup
+      when: qdevice_registered.rc != 0 or qdevice_nodes_missing_cert | length > 0
+      failed_when:
+        - qdevice_setup is failed
+        - "'Qdevice already configured, must be removed before setting up new one!' not in qdevice_setup.stdout | default('')"
+      changed_when: qdevice_setup is not skipped
+
+- name: Ensure the QDevice client is enabled and running on every cluster node
+  # `pvecm qdevice setup` distributes the cert but does not reliably leave
+  # corosync-qdevice.service enabled/started on nodes that only just received
+  # their cert (observed on a worker backfilled by the play above) — make
+  # that state explicit and idempotent instead of relying on however the
+  # underlying tooling happened to leave it.
+  #
+  # Re-check corosync.conf here rather than reusing the `qdevice_registered`/
+  # `qdevice_nssdb` facts from the earlier plays: those reflect state from
+  # BEFORE the registration play ran, so on a cluster's very first-ever
+  # QDevice setup they'd both still read as "not configured" and this play
+  # would wrongly skip every node. /etc/pve/corosync.conf is pmxcfs-synced,
+  # so every node sees the post-registration state immediately.
+  hosts: pve_cluster
+  become: true
+  tasks:
+    - name: Check if QDevice is configured (current, post-registration state)
+      command: grep -qE '^[[:space:]]*device[[:space:]]*\{' /etc/pve/corosync.conf
+      register: qdevice_configured_now
+      failed_when: false
+      changed_when: false
+
+    - name: Enable and start corosync-qdevice
+      systemd:
+        name: corosync-qdevice
+        enabled: true
+        state: started
+      when: qdevice_configured_now.rc == 0
