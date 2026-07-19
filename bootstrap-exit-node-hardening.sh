@@ -15,7 +15,15 @@
 #                           (AdGuard admin/DNS, Netdata, ...) unless they
 #                           arrive over tailscale0 or loopback. Lives in its
 #                           own nftables table so Tailscale's rules, Docker,
-#                           ufw, etc. are untouched.
+#                           ufw, etc. are untouched. Also adds a FORWARD-hook
+#                           rule (RFC1918 drop) for exit-node hosts: packets
+#                           arriving over tailscale0 and destined for private
+#                           ranges (10/8, 172.16/12, 192.168/16) are dropped,
+#                           so a tailnet client using this exit node can never
+#                           pivot into whatever LAN the exit node itself sits
+#                           on. The tailnet's own CGNAT range (100.64.0.0/10)
+#                           is deliberately excluded so normal tailnet traffic
+#                           is unaffected.
 #   2. CrowdSec           — community IP-reputation blocking (SSH, HTTP, ...)
 #                           with the nftables bouncer. Tailnet + RFC1918
 #                           sources are whitelisted so you can't ban yourself.
@@ -55,6 +63,14 @@
 #   HARDEN_SSH_TAILNET_ONLY   [0] DANGEROUS: also scope port 22 to the
 #                             tailnet. Only set this once you have verified
 #                             Tailscale SSH works from another device.
+#   HARDEN_RFC1918_DROP       [1] On exit-node hosts, drop tunnel-ingress
+#                             (tailscale0) traffic FORWARDed to RFC1918
+#                             destinations (10/8, 172.16/12, 192.168/16), so
+#                             the exit node can't be used to pivot into its
+#                             own LAN. Never touches the tailnet's own CGNAT
+#                             range (100.64.0.0/10). Harmless no-op on hosts
+#                             that aren't forwarding (no forwarded packets to
+#                             match).
 #   CROWDSEC_ENROLL_KEY       [] Optional key to enroll this instance in the
 #                             CrowdSec console (https://app.crowdsec.net).
 #   HARDEN_DRY_RUN            [0] Generate + validate only: writes the
@@ -89,6 +105,7 @@ HARDEN_TAILNET_TCP_PORTS="${HARDEN_TAILNET_TCP_PORTS:-53,80,443,853,3000,19999}"
 HARDEN_TAILNET_UDP_PORTS="${HARDEN_TAILNET_UDP_PORTS:-53,443,853}"
 HARDEN_ALLOW_CIDRS="${HARDEN_ALLOW_CIDRS:-}"
 HARDEN_SSH_TAILNET_ONLY="${HARDEN_SSH_TAILNET_ONLY:-0}"
+HARDEN_RFC1918_DROP="${HARDEN_RFC1918_DROP:-1}"
 HARDEN_DRY_RUN="${HARDEN_DRY_RUN:-0}"
 
 NFT_RULES_FILE="/etc/nftables.d/homelab-hardening.nft"
@@ -159,6 +176,20 @@ if [ "$HARDEN_NFTABLES" = "1" ]; then
   [ "$HARDEN_TAILNET_UDP_PORTS" != "" ] && drop_rules="${drop_rules}    udp dport $udp_set counter drop comment \"tailnet-only UDP\"
 "
 
+  forward_chain=""
+  if [ "$HARDEN_RFC1918_DROP" = "1" ]; then
+    forward_chain="
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+    # Tunnel-ingress traffic (from a tailnet peer, via this exit node) bound
+    # for private address space is dropped. This is what keeps a phone using
+    # this exit node from also pivoting into whatever LAN the exit node sits
+    # on. The tailnet's own range (100.64.0.0/10) is intentionally NOT in
+    # this list — that's normal tailnet-to-tailnet traffic.
+    iifname \"$HARDEN_TS_IFACE\" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 } counter drop comment \"rfc1918 tunnel-ingress drop\"
+  }"
+  fi
+
   mkdir -p "$(dirname "$NFT_RULES_FILE")"
   cat > "$NFT_RULES_FILE" <<EOF
 #!/usr/sbin/nft -f
@@ -166,11 +197,14 @@ if [ "$HARDEN_NFTABLES" = "1" ]; then
 # edit by hand (rerun the script with different env vars instead).
 #
 # Independent table: declaring + deleting it first makes reloads idempotent
-# without ever flushing Tailscale's / anyone else's ruleset. Only the 'input'
-# hook is used — exit-node FORWARD traffic is untouched. Policy is 'accept':
+# without ever flushing Tailscale's / anyone else's ruleset. The 'input'
+# chain scopes sensitive ports to the tailnet; policy is 'accept' there, so
 # nothing is blocked except NEW connections to the listed ports arriving from
-# outside the tailnet, so a bad rule here cannot lock you out of SSH (unless
-# you opted into HARDEN_SSH_TAILNET_ONLY).
+# outside the tailnet — a bad rule here cannot lock you out of SSH (unless
+# you opted into HARDEN_SSH_TAILNET_ONLY). The 'forward' chain (only present
+# when HARDEN_RFC1918_DROP=1) drops tunnel-ingress traffic bound for private
+# address space; it never touches Tailscale's own FORWARD rules or non-tailnet
+# forwarded traffic.
 
 table inet homelab_hardening
 delete table inet homelab_hardening
@@ -182,6 +216,7 @@ table inet homelab_hardening {
     iifname "$HARDEN_TS_IFACE" accept
     ct state established,related accept
 $allow_rules$drop_rules  }
+$forward_chain
 }
 EOF
 
@@ -191,6 +226,9 @@ EOF
   else
     nft -f "$NFT_RULES_FILE"
     log "nftables table 'inet homelab_hardening' loaded (TCP $tcp_set, UDP $udp_set -> tailnet only)"
+    if [ "$HARDEN_RFC1918_DROP" = "1" ]; then
+      log "RFC1918 tunnel-ingress drop active: $HARDEN_TS_IFACE -> {10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16} FORWARDed traffic is dropped"
+    fi
 
     # Persist across reboots with a dedicated oneshot unit. Ordered after the
     # distro nftables.service in case it is ever enabled (its 'flush ruleset'
@@ -377,4 +415,9 @@ echo "       nc -vz -w3 <tailscale-ip> 3000"
 if [ "$HARDEN_CROWDSEC" = "1" ]; then
   echo "  4. Check CrowdSec is watching and blocking:"
   echo "       sudo cscli metrics ; sudo cscli decisions list"
+fi
+if [ "$HARDEN_RFC1918_DROP" = "1" ]; then
+  echo "  5. Verify the RFC1918 tunnel-ingress drop from a client using this exit node:"
+  echo "       curl -m3 http://192.168.1.1/   # any RFC1918 IP the exit node's LAN sits on -> should time out"
+  echo "       sudo nft list table inet homelab_hardening   # check 'forward' chain drop counter"
 fi

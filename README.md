@@ -124,7 +124,7 @@ self-contained and runs with a single anonymous `curl | bash`:
 | [`bootstrap-nas-base.sh`](bootstrap-nas-base.sh) | Installs core apt/TLS packages + Docker, and joins Tailscale | Samba/NFS/Cockpit configuration, add-on containers |
 | [`bootstrap-tailscale-exit-node.sh`](bootstrap-tailscale-exit-node.sh) | Installs Tailscale, enables IP forwarding, advertises the host as an exit node, tunes UDP GRO throughput, installs fail2ban + unattended-upgrades | Tailscale ACLs, DNS filtering config, monitoring |
 | [`bootstrap-adguard-home.sh`](bootstrap-adguard-home.sh) | Installs AdGuard Home (DNS ad/tracker blocker) and starts it as a systemd service | All AdGuard config (upstream DNS, blocklists, admin password) — set through its own web wizard |
-| [`bootstrap-exit-node-hardening.sh`](bootstrap-exit-node-hardening.sh) | Layers nftables tailnet-only port scoping + CrowdSec (+ optional Suricata/Netdata) on an existing exit-node/AdGuard host | Tailscale ACLs (see [`tailscale-acl.example.hujson`](tailscale-acl.example.hujson)), fleet-specific port/CIDR tuning |
+| [`bootstrap-exit-node-hardening.sh`](bootstrap-exit-node-hardening.sh) | Layers nftables tailnet-only port scoping + RFC1918 tunnel-ingress drop + CrowdSec (+ optional Suricata/Netdata) on an existing exit-node/AdGuard host | Tailscale ACLs (see [`tailscale-acl.example.hujson`](tailscale-acl.example.hujson)), fleet-specific port/CIDR tuning |
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/thilagan-digital/bare-metal-bootstrap/main/<script>.sh \
