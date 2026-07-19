@@ -4,6 +4,12 @@
 
 cluster_name: "pve-cluster"
 
+# LAN subnet trusted for emergency SSH access if Tailscale is ever down, and
+# the only source playbooks/06-pve-firewall.yml's corosync assertion accepts
+# for ring0 addressing. Proxmox's own web UI/API (8006) is intentionally
+# NOT in this list once 06 runs — it's locked to the tailnet interface only.
+trusted_lan_subnet: "10.10.10.0/24"
+
 # Your tailnet's MagicDNS suffix (admin console -> DNS -> "tailnet name"),
 # used by playbooks/05-tls-cert.yml to build each node's own
 # <inventory_hostname>.<tailnet_domain> cert name. Requires Tailscale HTTPS

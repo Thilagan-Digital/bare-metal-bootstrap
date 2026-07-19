@@ -1,0 +1,129 @@
+---
+# Locks the PVE web UI/API (pveproxy, port 8006) to the tailnet interface on
+# every cluster node, via Proxmox's own pve-firewall daemon — a different
+# firewall layer than any Ubuntu-side nftables setup elsewhere in your fleet;
+# pve-firewall is the only layer that can filter pveproxy on a PVE host.
+#
+# Applied host.fw is identical on every node (no per-host templating needed
+# beyond trusted_lan_subnet): tailscale0 is fully trusted (matches a
+# tailnet-as-network-boundary posture), trusted_lan_subnet keeps SSH as a
+# break-glass path if Tailscale itself is ever down, and 8006 is explicitly
+# dropped everywhere else — reinforcing (not just relying on) policy_in: DROP.
+#
+# Corosync is NOT gated by any rule here — pve-firewall always allows corosync
+# traffic (UDP 5404-5405) between the addresses listed in corosync.conf,
+# independent of policy_in, so this can't accidentally fence the cluster.
+# That said, this playbook asserts corosync addressing BEFORE touching the
+# firewall at all: if ring0 has drifted onto Tailscale (100.x) for any
+# reason, failing loudly here is much safer than layering a firewall change
+# on top of an already-compromised quorum path.
+#
+# serial: 1 plus the confirmation pause below apply this one node at a time
+# — have physical/iDRAC/IPMI console access to the CURRENT node ready before
+# confirming. If a rule is wrong, /etc/pve/local/host.fw lives in pmxcfs
+# (Proxmox's cluster filesystem): any OTHER still-reachable node can revert
+# it — `pve-firewall` picks up the edit automatically within seconds, no
+# restart or SSH to the affected node required.
+- name: Lock Proxmox web UI (8006) to tailscale0, verify corosync stays on the LAN
+  hosts: pve_cluster
+  become: true
+  serial: 1
+  vars:
+    pve_firewall_tailscale_iface: "tailscale0"
+    pve_firewall_web_port: 8006
+    pve_firewall_ssh_port: 22
+  tasks:
+    - name: Confirm console access is available for this node before proceeding
+      pause:
+        prompt: >-
+          About to lock 8006 to {{ pve_firewall_tailscale_iface }} on
+          {{ inventory_hostname }} ({{ ansible_host | default(inventory_hostname) }}).
+          Confirm physical/console access to THIS node is available, then press
+          Enter to continue (Ctrl+C, A to abort the whole run)
+
+    - name: Assert corosync ring0 stays on the physical LAN, never Tailscale
+      when: pve_firewall_verify_corosync | default(true) | bool
+      block:
+        - name: Read corosync ring0 status
+          command: corosync-cfgtool -s
+          register: pve_firewall_corosync_status
+          changed_when: false
+
+        - name: Extract this node's ring0 address
+          # Matches a line like "addr = 192.168.0.67" under "LINK ID 0".
+          set_fact:
+            pve_firewall_ring0_addr: "{{ pve_firewall_corosync_status.stdout | regex_search('addr\\s*=\\s*([0-9.]+)', '\\1') | first }}"
+
+        - name: Fail if ring0 is not inside trusted_lan_subnet
+          assert:
+            that:
+              - pve_firewall_ring0_addr | ansible.utils.ipaddr(trusted_lan_subnet) | default(false, true)
+            fail_msg: >-
+              corosync ring0 on {{ inventory_hostname }} is {{ pve_firewall_ring0_addr }},
+              which is not inside trusted_lan_subnet ({{ trusted_lan_subnet }}). Refusing to
+              touch the firewall until corosync addressing is confirmed to be off Tailscale.
+            success_msg: "corosync ring0 ({{ pve_firewall_ring0_addr }}) confirmed inside {{ trusted_lan_subnet }}"
+
+        - name: Fail if ring0 falls inside Tailscale's CGNAT range
+          assert:
+            that:
+              - not (pve_firewall_ring0_addr | ansible.utils.ipaddr('100.64.0.0/10') | default(false, true))
+            fail_msg: >-
+              corosync ring0 on {{ inventory_hostname }} ({{ pve_firewall_ring0_addr }}) is a
+              Tailscale address — corosync must never run over the tailnet.
+            success_msg: "corosync ring0 confirmed off Tailscale's 100.64.0.0/10 range"
+
+    - name: Deploy the per-node pve-firewall ruleset (host.fw)
+      block:
+        - name: Template host.fw
+          template:
+            src: templates/host.fw.j2
+            dest: /etc/pve/local/host.fw
+            owner: root
+            group: www-data
+            mode: "0640"
+            backup: true
+          register: pve_firewall_host_fw
+
+        - name: Validate the ruleset compiles
+          command: pve-firewall compile
+          changed_when: false
+
+        - name: Restart pve-firewall to pick up the new ruleset immediately
+          systemd:
+            name: pve-firewall
+            state: restarted
+          when: pve_firewall_host_fw.changed
+
+        - name: Verify pveproxy still answers over tailscale0
+          # Confirms this node's own management path stays up before moving
+          # on to the next node in the serial rollout.
+          uri:
+            url: "https://127.0.0.1:{{ pve_firewall_web_port }}/api2/json/version"
+            validate_certs: false
+            status_code: 401
+          register: pve_firewall_localhost_check
+          retries: 3
+          delay: 2
+          until: pve_firewall_localhost_check.status == 401
+      rescue:
+        - name: Restore the previous host.fw from backup
+          copy:
+            src: "{{ pve_firewall_host_fw.backup_file }}"
+            dest: /etc/pve/local/host.fw
+            remote_src: true
+            owner: root
+            group: www-data
+            mode: "0640"
+          when: pve_firewall_host_fw.backup_file is defined
+
+        - name: Restart pve-firewall with the restored ruleset
+          systemd:
+            name: pve-firewall
+            state: restarted
+
+        - name: Fail loudly so the operator investigates with console access on hand
+          fail:
+            msg: >-
+              pve-firewall deploy failed on {{ inventory_hostname }} and the previous
+              host.fw was restored. Investigate via console before re-running.

@@ -1,0 +1,22 @@
+## /etc/pve/local/host.fw — managed by bare-metal-bootstrap's
+## playbooks/06-pve-firewall.yml. Do not edit by hand; changes are
+## overwritten on the next run.
+##
+## Locks pveproxy (port {{ pve_firewall_web_port }}) to the tailnet
+## interface only. Rules are evaluated top to bottom, first match wins:
+## tailscale0 is fully trusted, trusted_lan_subnet keeps SSH open as a
+## break-glass path if Tailscale is ever down, and everything else
+## (including {{ pve_firewall_web_port }} on the physical NIC/vmbr0) falls
+## through to policy_in: DROP below. Corosync is NOT listed here — Proxmox's
+## firewall always permits corosync traffic between the nodes present in
+## corosync.conf, independent of these rules or policy_in.
+
+[OPTIONS]
+enable: 1
+policy_in: DROP
+policy_out: ACCEPT
+
+[RULES]
+IN ACCEPT -i {{ pve_firewall_tailscale_iface }}
+IN ACCEPT -p tcp -dport {{ pve_firewall_ssh_port }} -source {{ trusted_lan_subnet }}
+IN DROP -p tcp -dport {{ pve_firewall_web_port }}
