@@ -1,0 +1,22 @@
+## /etc/pve/local/host.fw — managed by bare-metal-bootstrap's
+## playbooks/06-pve-firewall.yml. Do not edit by hand; changes are
+## overwritten on the next run.
+##
+## host.fw carries this node's [RULES] only. Proxmox's firewall master
+## switch and default policy_in/policy_out are cluster.fw-only options —
+## host.fw has no such keys (pve-firewall's own config parser rejects them
+## here) — so this file is INERT until cluster.fw has enable: 1. See
+## templates/cluster.fw.j2.
+##
+## Rules are evaluated top to bottom, first match wins: tailscale0 is fully
+## trusted, trusted_lan_subnet keeps SSH open as a break-glass path if
+## Tailscale is ever down, and everything else (including
+## {{ pve_firewall_web_port }} on the physical NIC/vmbr0) falls through to
+## cluster.fw's policy_in: DROP. Corosync is NOT listed here — Proxmox's
+## firewall always permits corosync traffic between the nodes present in
+## corosync.conf, independent of these rules or policy_in.
+
+[RULES]
+IN ACCEPT -i {{ pve_firewall_tailscale_iface }}
+IN ACCEPT -p tcp -dport {{ pve_firewall_ssh_port }} -source {{ trusted_lan_subnet }}
+IN DROP -p tcp -dport {{ pve_firewall_web_port }}

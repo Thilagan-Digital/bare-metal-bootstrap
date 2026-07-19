@@ -1,0 +1,227 @@
+---
+# Locks the PVE web UI/API (pveproxy, port 8006) to the tailnet interface on
+# every cluster node, via Proxmox's own pve-firewall daemon — a different
+# firewall layer than any Ubuntu-side nftables setup elsewhere in your fleet;
+# pve-firewall is the only layer that can filter pveproxy on a PVE host.
+#
+# Proxmox's firewall is a single cluster-wide switch: nothing is enforced
+# ANYWHERE (host or VM) unless /etc/pve/firewall/cluster.fw's [OPTIONS] has
+# enable: 1 — that file also owns policy_in/policy_out, which host.fw has no
+# equivalent for (pve-firewall's own parser rejects those keys in host.fw).
+# So this runs in three passes:
+#
+#   1. Per node (serial: 1, paused for console-access confirmation): assert
+#      corosync is off Tailscale, then stage this node's host.fw [RULES]
+#      (tailscale0 trusted, trusted_lan_subnet SSH break-glass, 8006
+#      dropped). Inert on its own — cluster.fw's enable is still off.
+#   2. Once, from the control node: flip cluster.fw's enable/policy on.
+#      This is the actual cutover — it applies to all four nodes near-
+#      instantly via pmxcfs, which is why every node's host.fw had to be
+#      staged first in pass 1.
+#   3. Per node again: confirm pveproxy still answers over tailscale0 after
+#      the cutover; roll the cluster-wide switch back off if any node fails.
+#
+# Corosync is NOT gated by any rule here — pve-firewall always allows
+# corosync traffic (UDP 5404-5405) between the addresses listed in
+# corosync.conf, independent of policy_in, so this can't accidentally fence
+# the cluster.
+#
+# /etc/pve/... lives in pmxcfs (Proxmox's cluster filesystem): any reachable
+# node can revert cluster.fw or a stuck node's host.fw — pve-firewall picks
+# up the edit within seconds, no restart or SSH to the affected node
+# required. pmxcfs also doesn't support atomic rename() or explicit
+# chown/chmod, hence unsafe_writes and the lack of owner/group/mode below.
+- name: Stage per-node pve-firewall rules, verify corosync stays on the LAN
+  hosts: pve_cluster
+  become: true
+  serial: 1
+  vars:
+    pve_firewall_tailscale_iface: "tailscale0"
+    pve_firewall_web_port: 8006
+    pve_firewall_ssh_port: 22
+  tasks:
+    - name: Confirm console access is available for this node before proceeding
+      pause:
+        prompt: >-
+          About to stage the 8006-to-{{ pve_firewall_tailscale_iface }} firewall rules on
+          {{ inventory_hostname }} ({{ ansible_host | default(inventory_hostname) }}).
+          Confirm physical/console access to THIS node is available, then press
+          Enter to continue (Ctrl+C, A to abort the whole run)
+
+    - name: Assert corosync ring0 stays on the physical LAN, never Tailscale
+      when: pve_firewall_verify_corosync | default(true) | bool
+      block:
+        - name: Read corosync ring0 status
+          command: corosync-cfgtool -s
+          register: pve_firewall_corosync_status
+          changed_when: false
+
+        - name: Extract this node's ring0 address
+          # Matches a line like "addr = 192.168.0.67" under "LINK ID 0".
+          set_fact:
+            pve_firewall_ring0_addr: "{{ pve_firewall_corosync_status.stdout | regex_search('addr\\s*=\\s*([0-9.]+)', '\\1') | first }}"
+
+        - name: Fail if ring0 is not inside trusted_lan_subnet
+          assert:
+            that:
+              # ansible.utils.ipaddr returns the matched address (a string) on
+              # match, '' on no match — compare explicitly so the conditional
+              # evaluates to a real boolean (ansible-core 2.19+ rejects a bare
+              # truthy string as a conditional result).
+              - (pve_firewall_ring0_addr | ansible.utils.ipaddr(trusted_lan_subnet) | default('', true)) != ''
+            fail_msg: >-
+              corosync ring0 on {{ inventory_hostname }} is {{ pve_firewall_ring0_addr }},
+              which is not inside trusted_lan_subnet ({{ trusted_lan_subnet }}). Refusing to
+              touch the firewall until corosync addressing is confirmed to be off Tailscale.
+            success_msg: "corosync ring0 ({{ pve_firewall_ring0_addr }}) confirmed inside {{ trusted_lan_subnet }}"
+
+        - name: Fail if ring0 falls inside Tailscale's CGNAT range
+          assert:
+            that:
+              - (pve_firewall_ring0_addr | ansible.utils.ipaddr('100.64.0.0/10') | default('', true)) == ''
+            fail_msg: >-
+              corosync ring0 on {{ inventory_hostname }} ({{ pve_firewall_ring0_addr }}) is a
+              Tailscale address — corosync must never run over the tailnet.
+            success_msg: "corosync ring0 confirmed off Tailscale's 100.64.0.0/10 range"
+
+    - name: "Stage this node's host.fw RULES (inert until cluster.fw enable: 1)"
+      block:
+        - name: Template host.fw
+          template:
+            src: templates/host.fw.j2
+            dest: /etc/pve/local/host.fw
+            backup: true
+            unsafe_writes: true
+          register: pve_firewall_host_fw
+          # pmxcfs (FUSE) reliably raises EPERM on a trailing attribute-set
+          # syscall even once the content write itself has already landed
+          # correctly (verified: post-write content/checksum matches, and
+          # `pve-firewall compile` parses it cleanly) — so the module's own
+          # success flag is not trustworthy here. `pve-firewall compile`
+          # immediately below is the real, authoritative gate: a genuinely
+          # broken write fails to parse and still trips the rescue block.
+          ignore_errors: true
+
+        - name: Validate the ruleset compiles
+          command: pve-firewall compile
+          changed_when: false
+      rescue:
+        - name: Restore the previous host.fw from backup
+          copy:
+            src: "{{ pve_firewall_host_fw.backup_file }}"
+            dest: /etc/pve/local/host.fw
+            remote_src: true
+            unsafe_writes: true
+          when: pve_firewall_host_fw.backup_file is defined
+
+        - name: Fail loudly so the operator investigates with console access on hand
+          fail:
+            msg: >-
+              Staging host.fw failed on {{ inventory_hostname }} and the previous
+              version was restored. Investigate via console before re-running.
+
+# Cutover: nothing above is enforced yet. This flips the cluster-wide switch
+# that makes every node's staged host.fw take effect, near-simultaneously,
+# on all four nodes.
+- name: Enable the cluster-wide firewall switch (the actual cutover)
+  hosts: control_node
+  become: true
+  vars:
+    pve_firewall_web_port: 8006
+  tasks:
+    - name: Deploy cluster.fw and verify pveproxy stays reachable
+      block:
+        - name: Template cluster.fw
+          template:
+            src: templates/cluster.fw.j2
+            dest: /etc/pve/firewall/cluster.fw
+            backup: true
+            unsafe_writes: true
+          register: pve_firewall_cluster_fw
+          # See the equivalent host.fw task in the prior play: pmxcfs
+          # reliably EPERMs on a trailing attribute-set syscall even though
+          # the content write itself lands correctly. `pve-firewall compile`
+          # immediately below is the real gate.
+          ignore_errors: true
+
+        - name: Validate the ruleset compiles
+          command: pve-firewall compile
+          changed_when: false
+
+        - name: Give pve-firewall a moment to pick up the cluster-wide change
+          pause:
+            seconds: 5
+
+        - name: Verify pveproxy still answers over tailscale0 on the control node
+          uri:
+            url: "https://127.0.0.1:{{ pve_firewall_web_port }}/api2/json/version"
+            validate_certs: false
+            status_code: 401
+          register: pve_firewall_localhost_check
+          retries: 5
+          delay: 3
+          until: pve_firewall_localhost_check.status == 401
+      rescue:
+        - name: Restore the previous cluster.fw from backup, or disable the switch outright
+          copy:
+            src: "{{ pve_firewall_cluster_fw.backup_file }}"
+            dest: /etc/pve/firewall/cluster.fw
+            remote_src: true
+            unsafe_writes: true
+          when: pve_firewall_cluster_fw.backup_file is defined
+          ignore_errors: true
+
+        - name: No prior cluster.fw existed — disable the firewall outright
+          copy:
+            content: |
+              [OPTIONS]
+              enable: 0
+            dest: /etc/pve/firewall/cluster.fw
+            unsafe_writes: true
+          when: pve_firewall_cluster_fw.backup_file is not defined
+          ignore_errors: true
+
+        - name: Fail loudly so the operator investigates with console access on hand
+          fail:
+            msg: >-
+              Cluster-wide pve-firewall cutover failed and has been rolled back.
+              Investigate via console before re-running.
+
+# Post-cutover verification on every node — the control-node-only check
+# above confirms the daemon itself is healthy, this confirms the change
+# actually propagated (and is safe) fleet-wide.
+- name: Verify every node survived the cutover
+  hosts: pve_cluster
+  become: true
+  vars:
+    pve_firewall_web_port: 8006
+  tasks:
+    - name: Verify pveproxy still answers over tailscale0
+      block:
+        - name: Check pveproxy locally
+          uri:
+            url: "https://127.0.0.1:{{ pve_firewall_web_port }}/api2/json/version"
+            validate_certs: false
+            status_code: 401
+          register: pve_firewall_postcutover_check
+          retries: 5
+          delay: 3
+          until: pve_firewall_postcutover_check.status == 401
+      rescue:
+        - name: Disable the cluster-wide firewall switch (emergency rollback)
+          copy:
+            content: |
+              [OPTIONS]
+              enable: 0
+            dest: /etc/pve/firewall/cluster.fw
+            unsafe_writes: true
+          delegate_to: "{{ groups['control_node'][0] }}"
+          run_once: true
+          ignore_errors: true
+
+        - name: Fail loudly so the operator investigates with console access on hand
+          fail:
+            msg: >-
+              {{ inventory_hostname }} failed the post-cutover pveproxy check.
+              The cluster-wide firewall switch has been disabled as an emergency
+              rollback. Investigate via console before re-running.

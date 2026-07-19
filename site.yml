@@ -11,3 +11,4 @@
 - import_playbook: playbooks/03-qdevice.yml
 - import_playbook: playbooks/04-storage.yml
 - import_playbook: playbooks/05-tls-cert.yml
+- import_playbook: playbooks/06-pve-firewall.yml

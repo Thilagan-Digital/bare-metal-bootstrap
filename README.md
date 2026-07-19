@@ -61,10 +61,14 @@ bare-metal-bootstrap/
 │   ├── 01-cluster-init.yml  # Initialize the Corosync cluster (control node)
 │   ├── 02-join-workers.yml  # Join worker nodes to the control node
 │   ├── 03-qdevice.yml       # Configure the external QDevice for quorum
-│   └── 04-storage.yml       # Provision cluster-wide NFS/SMB storage tiers
+│   ├── 04-storage.yml       # Provision cluster-wide NFS/SMB storage tiers
+│   ├── 05-tls-cert.yml      # Trusted Tailscale TLS cert for the PVE API (pveproxy)
+│   ├── 06-pve-firewall.yml  # Lock pveproxy (8006) to tailscale0 via pve-firewall; assert corosync stays on the LAN
+│   └── templates/host.fw.j2
 ├── inventory.example/       # Copy this into a git-ignored private-inventory/
 │   ├── hosts.ini
 │   └── group_vars/all.yml
+├── requirements.yml         # Galaxy collections the playbooks depend on
 └── bootstrap-*.sh           # Standalone single-purpose bootstrap scripts (below)
 ```
 
@@ -91,9 +95,18 @@ cp inventory.example/group_vars/all.yml private-inventory/group_vars/all.yml
 # Store your passwords in an encrypted vault (never plaintext):
 ansible-vault create private-inventory/group_vars/vault.yml
 
-# Requires: ansible-core + the pexpect python module (pip install pexpect).
+# Requires: ansible-core + the pexpect python module (pip install pexpect),
+# plus the Galaxy collections in requirements.yml (used by 06-pve-firewall.yml's
+# corosync-address assertion):
+ansible-galaxy collection install -r requirements.yml
+
 ansible-playbook -i private-inventory/hosts.ini site.yml --ask-vault-pass
 ```
+
+`06-pve-firewall.yml` runs `serial: 1` and pauses for an operator confirmation
+before each node — have physical/iDRAC/IPMI console access to that node ready
+before confirming. See the playbook's header comment for the recovery path
+if a node ends up unreachable mid-rollout.
 
 The playbooks are idempotent and each is independently re-runnable — a
 partial or repeated run reconverges rather than erroring on what already
