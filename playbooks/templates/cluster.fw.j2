@@ -1,0 +1,19 @@
+## /etc/pve/firewall/cluster.fw — managed by bare-metal-bootstrap's
+## playbooks/06-pve-firewall.yml. Do not edit by hand; changes are
+## overwritten on the next run.
+##
+## Datacenter-wide firewall master switch + default policy. pve-firewall is
+## a complete no-op cluster-wide unless enable: 1 is set HERE (not in any
+## host.fw) — see PVE::Firewall::compile(). policy_in: DROP is what actually
+## makes every host.fw's [RULES] meaningful; without it those rules exist
+## but enforce nothing.
+##
+## Deliberately carries no [RULES] of its own — every node's own host.fw
+## already covers the identical tailscale0/LAN-SSH/8006 policy, and this
+## file is written once, cluster-wide, only after every node's host.fw is
+## already staged (see the playbook's task ordering).
+
+[OPTIONS]
+enable: 1
+policy_in: DROP
+policy_out: ACCEPT
