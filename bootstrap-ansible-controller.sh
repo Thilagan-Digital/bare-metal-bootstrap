@@ -54,10 +54,12 @@ echo -e "${GREEN}==> Initializing Ansible Controller Bootstrap Sequence...${NC}"
 #    interactive prompts via ansible.builtin.expect), gnupg/gpgv — a minimal
 #    image (e.g. a fresh Proxmox VE install) often lacks gpgv, which the
 #    Doppler CLI installer in step 2 requires for signature verification
-#    even though gnupg itself may already be present — and git, needed to
+#    even though gnupg itself may already be present — git, needed to
 #    clone the automation repos (this one and your private inventory) once
-#    this controller is set up.
-PACKAGES=(ansible-core python3 openssh-client python3-pexpect gnupg gpgv git)
+#    this controller is set up, and ansible-lint so the same lint gate CI
+#    enforces (.github/workflows/ci.yml `ansible-lint playbooks/site.yml`)
+#    can be run locally on the controller before pushing.
+PACKAGES=(ansible-core ansible-lint python3 openssh-client python3-pexpect gnupg gpgv git)
 missing_packages=()
 for pkg in "${PACKAGES[@]}"; do
     dpkg -s "$pkg" >/dev/null 2>&1 || missing_packages+=("$pkg")
