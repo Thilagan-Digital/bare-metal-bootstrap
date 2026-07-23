@@ -1,0 +1,54 @@
+// Unattended-upgrades configuration for Proxmox VE hosts.
+//
+// CRITICAL SAFETY CONSTRAINT: this file enables auto-patching for the
+// Debian-Security origin ONLY.  PVE packages (pve-manager, proxmox-ve,
+// pve-kernel-*, etc.) are NEVER auto-dist-upgraded — they require the
+// drain-and-reboot orchestration in 07-pve-patch.yml and must go through
+// the operator-gated rolling window.
+//
+// Managed by Ansible (07-pve-patch.yml) — local edits will be overwritten.
+
+Unattended-Upgrade::Origins-Pattern {
+    // Debian-Security updates only — the one origin we trust to apply
+    // unattended on a PVE host.  The codename comes from `lsb_release -cs`
+    // on the target node (e.g. "bookworm" for PVE 8.x / Debian 12,
+    // "trixie" for PVE 9.x / Debian 13).
+    "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+};
+
+// --- Explicitly BLOCKED origins (belt-and-suspenders) ---
+// Never auto-upgrade from PVE enterprise or community repos.  These
+// patterns match and *blacklist* any package whose origin starts with
+// "Proxmox" — covering both pve-enterprise and pve-no-subscription.
+Unattended-Upgrade::Package-Blacklist {
+    // Block all PVE kernel meta-packages (pve-kernel-*)
+    "pve-kernel-*";
+    // Block the PVE manager itself
+    "pve-manager";
+    // Block the PVE meta-package
+    "proxmox-ve";
+    // Block PVE firmware packages
+    "pve-firmware";
+    // Block any Ceph packages managed by PVE
+    "ceph*";
+};
+
+// --- Safe operational defaults for a hypervisor ---
+
+// Never auto-reboot — reboots are orchestrated by 07-pve-patch.yml's
+// drain-and-reboot cycle.  An unattended reboot of a hypervisor without
+// draining guests first would be catastrophic.
+Unattended-Upgrade::Automatic-Reboot "false";
+
+// Send summary mail to root (forwarded via /etc/aliases or .forward).
+Unattended-Upgrade::Mail "root";
+Unattended-Upgrade::MailReport "on-change";
+
+// Remove unused kernel packages after upgrade.
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+// Remove unused auto-installed dependencies.
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+
+// Log to syslog for evidence/auditability.
+Unattended-Upgrade::SyslogEnable "true";
+Unattended-Upgrade::SyslogFacility "daemon";

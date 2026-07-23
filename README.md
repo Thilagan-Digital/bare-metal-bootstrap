@@ -64,7 +64,11 @@ bare-metal-bootstrap/
 │   ├── 04-storage.yml       # Provision cluster-wide NFS/SMB storage tiers
 │   ├── 05-tls-cert.yml      # Trusted Tailscale TLS cert for the PVE API (pveproxy)
 │   ├── 06-pve-firewall.yml  # Lock pveproxy (8006) to tailscale0 via pve-firewall; assert corosync stays on the LAN
-│   └── templates/host.fw.j2
+│   ├── 07-pve-patch.yml     # Rolling patch-and-reboot + Debian-Security unattended-upgrades on PVE hosts
+│   └── templates/
+│       ├── host.fw.j2
+│       ├── cluster.fw.j2
+│       └── 50unattended-upgrades-pve.j2
 ├── inventory.example/       # Copy this into a git-ignored private-inventory/
 │   ├── hosts.ini
 │   └── group_vars/all.yml
@@ -107,6 +111,19 @@ ansible-playbook -i private-inventory/hosts.ini site.yml --ask-vault-pass
 before each node — have physical/iDRAC/IPMI console access to that node ready
 before confirming. See the playbook's header comment for the recovery path
 if a node ends up unreachable mid-rollout.
+
+`07-pve-patch.yml` is the rolling patch-and-reboot playbook — also `serial: 1`
+with an operator pause per node. Each node is drained (guests live-migrated
+or HA-drained), fully upgraded (`apt full-upgrade`), rebooted only if the
+kernel or `pve-manager` version changed, then verified for quorum and
+`pveproxy` health before proceeding. It also configures `unattended-upgrades`
+scoped to the **Debian-Security origin only** — PVE packages are never
+auto-dist-upgraded. Run it standalone for maintenance windows:
+
+```bash
+ansible-playbook -i private-inventory/hosts.ini playbooks/07-pve-patch.yml \
+  --ask-vault-pass
+```
 
 The playbooks are idempotent and each is independently re-runnable — a
 partial or repeated run reconverges rather than erroring on what already

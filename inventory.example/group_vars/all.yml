@@ -39,3 +39,15 @@ pve_storage_pools:
     export: "/export/proxmox/backups"
     content: "backup,iso,vztmpl"
     options: "vers=4.1,hard,timeo=600"
+
+# Expected PVE major version — playbooks/07-pve-patch.yml refuses to patch
+# or enable unattended-upgrades unless the running pve-manager matches this.
+# Bump when you intentionally upgrade the cluster to a new major release.
+pve_expected_major_version: "8"
+
+# Guest migration strategy for 07-pve-patch.yml's drain-before-reboot step:
+#   "live"     — live-migrate QEMU guests + relocate LXC (requires shared storage)
+#   "ha"       — HA-manager drain, then migrate non-HA guests
+#   "shutdown" — ACPI-stop all guests, patch, reboot, start them back
+pve_migration_mode: "live"
+

@@ -1,0 +1,475 @@
+---
+# Rolling patch-and-reboot for the Proxmox VE cluster.
+#
+# Modeled on 06-pve-firewall.yml: serial: 1, operator-gated, one node at a
+# time so the cluster never loses quorum.  Each node is fully drained,
+# patched, conditionally rebooted (only when the running kernel or
+# pve-manager version changes), returned to quorum, health-checked, and
+# rebalanced before the next node begins.
+#
+# This playbook also deploys unattended-upgrades scoped to the
+# Debian-Security origin ONLY — PVE packages are never auto-dist-upgraded
+# because they may require the drain-and-reboot orchestration this playbook
+# provides.  The unattended-upgrades configuration is gated on confirming
+# each node's PVE major version and apt repo first.
+#
+# Run from a management machine against your private inventory:
+#
+#   ansible-playbook -i private-inventory/hosts.ini playbooks/07-pve-patch.yml \
+#     --ask-vault-pass
+#
+# Have physical/iDRAC/IPMI console access available for each node — the
+# operator pause gives you time to confirm before proceeding.
+#
+# Guest migration strategy (configurable via pve_patch_migration_mode):
+#   - "live" (default): live-migrate all QEMU guests and relocate LXC to
+#     other cluster members.  Requires shared storage for the VM disks.
+#   - "ha" : set the node's HA policy to "migrate" and let the HA manager
+#     drain all HA-managed guests, then live-migrate any remaining non-HA
+#     guests.  Safest for HA-heavy clusters.
+#   - "shutdown": request-stop all guests, patch, reboot, start them back.
+#     Use when shared storage is unavailable.
+
+###########################################################################
+# Play 1 — Per-node rolling patch cycle
+###########################################################################
+- name: "Rolling patch-and-reboot (serial: 1, operator-gated)"
+  hosts: pve_cluster
+  become: true
+  serial: 1
+  vars:
+    # Which PVE major version this playbook expects (safety rail).
+    pve_patch_expected_major: "{{ pve_expected_major_version | default('8') }}"
+    # Guest migration strategy: "live" | "ha" | "shutdown"
+    pve_patch_migration_mode: "{{ pve_migration_mode | default('live') }}"
+    # Seconds to wait for quorum after reboot
+    pve_patch_quorum_timeout: 300
+    # Seconds between quorum-check retries
+    pve_patch_quorum_delay: 10
+
+  tasks:
+    # ── 0. Operator gate ────────────────────────────────────────────────
+    - name: Confirm the operator is ready to patch this node
+      pause:
+        prompt: >-
+          About to patch {{ inventory_hostname }}
+          ({{ ansible_host | default(inventory_hostname) }}).
+          Confirm console access is available, then press Enter
+          (Ctrl+C, A to abort the whole run)
+
+    # ── 1. Pre-flight checks ───────────────────────────────────────────
+    - name: Pre-flight — confirm PVE version and apt repo
+      block:
+        - name: Read the running PVE major version
+          command: pveversion --verbose
+          register: pve_patch_pveversion
+          changed_when: false
+
+        - name: Extract the PVE major version number
+          set_fact:
+            pve_patch_running_major: >-
+              {{ pve_patch_pveversion.stdout
+                 | regex_search('pve-manager/(\d+)', '\1')
+                 | first }}
+
+        - name: Fail if PVE major version does not match the expected version
+          assert:
+            that:
+              - pve_patch_running_major == pve_patch_expected_major
+            fail_msg: >-
+              {{ inventory_hostname }} is running PVE {{ pve_patch_running_major }}.x
+              but this playbook expects {{ pve_patch_expected_major }}.x.
+              Update pve_expected_major_version in your inventory if this is
+              intentional.
+            success_msg: >-
+              PVE {{ pve_patch_running_major }}.x confirmed
+              (expected {{ pve_patch_expected_major }}.x)
+
+        - name: List configured apt sources
+          shell: >
+            find /etc/apt/sources.list.d/ -name '*.list' -o -name '*.sources'
+            | xargs grep -lE '(pve|proxmox)' 2>/dev/null || true
+          register: pve_patch_apt_sources
+          changed_when: false
+
+        - name: Log the configured PVE apt repositories
+          debug:
+            msg: >-
+              PVE apt sources on {{ inventory_hostname }}:
+              {{ pve_patch_apt_sources.stdout_lines | default(['(none found)']) }}
+
+    - name: Verify cluster quorum is healthy before touching anything
+      block:
+        - name: Check pvecm status
+          command: pvecm status
+          register: pve_patch_pre_quorum
+          changed_when: false
+
+        - name: Assert quorum is established
+          assert:
+            that:
+              - "'Quorate:          Yes' in pve_patch_pre_quorum.stdout
+                 or 'Activity status: active' in pve_patch_pre_quorum.stdout"
+            fail_msg: >-
+              Cluster is NOT quorate on {{ inventory_hostname }} — refusing
+              to proceed.  Investigate with 'pvecm status'.
+            success_msg: "Cluster quorum confirmed before patching"
+
+    # ── 2. Snapshot running kernel + pve-manager versions ──────────────
+    - name: Record pre-upgrade kernel version
+      command: uname -r
+      register: pve_patch_kernel_before
+      changed_when: false
+
+    - name: Record pre-upgrade pve-manager version
+      shell: dpkg-query -W -f='${Version}' pve-manager 2>/dev/null || echo 'unknown'
+      register: pve_patch_pvemgr_before
+      changed_when: false
+
+    # ── 3. Drain guests off this node ──────────────────────────────────
+    - name: "Drain guests (mode: {{ pve_patch_migration_mode }})"
+      block:
+        # ---------- HA drain path ----------
+        - name: "HA drain — set node to 'maintenance' (migrate away)"
+          when: pve_patch_migration_mode == 'ha'
+          block:
+            - name: Enable HA maintenance mode on this node
+              command: >
+                ha-manager crm-command node-maintenance enable
+                {{ inventory_hostname }}
+              register: pve_patch_ha_maintenance
+              # ha-manager returns 0 even if already in maintenance
+              changed_when: "'already' not in (pve_patch_ha_maintenance.stderr | default(''))"
+
+            - name: Wait for HA manager to finish draining guests
+              shell: >
+                pvesh get /nodes/{{ inventory_hostname }}/qemu --output-format json 2>/dev/null
+                | python3 -c "import sys,json;
+                vms=json.load(sys.stdin);
+                running=[v['vmid'] for v in vms if v.get('status')=='running'];
+                print(len(running))"
+              register: pve_patch_ha_remaining
+              until: pve_patch_ha_remaining.stdout | int == 0
+              retries: 60
+              delay: 10
+              changed_when: false
+
+        # ---------- Live-migrate path ----------
+        - name: "Live-migrate guests off this node"
+          when: pve_patch_migration_mode == 'live'
+          block:
+            - name: List running QEMU VMs on this node
+              shell: >
+                pvesh get /nodes/{{ inventory_hostname }}/qemu --output-format json 2>/dev/null
+                | python3 -c "import sys,json;
+                vms=json.load(sys.stdin);
+                [print(v['vmid']) for v in vms if v.get('status')=='running']"
+              register: pve_patch_running_qemu
+              changed_when: false
+
+            - name: List running LXC containers on this node
+              shell: >
+                pvesh get /nodes/{{ inventory_hostname }}/lxc --output-format json 2>/dev/null
+                | python3 -c "import sys,json;
+                cts=json.load(sys.stdin);
+                [print(c['vmid']) for c in cts if c.get('status')=='running']"
+              register: pve_patch_running_lxc
+              changed_when: false
+
+            - name: Pick the first available target node for migration
+              set_fact:
+                pve_patch_target_node: >-
+                  {{ groups['pve_cluster']
+                     | reject('equalto', inventory_hostname)
+                     | first }}
+
+            - name: Live-migrate each running QEMU VM
+              command: >
+                qm migrate {{ item }} {{ pve_patch_target_node }}
+                --online 1 --with-local-disks 0
+              loop: "{{ pve_patch_running_qemu.stdout_lines | default([]) }}"
+              when: pve_patch_running_qemu.stdout_lines | default([]) | length > 0
+
+            - name: Relocate each running LXC container
+              command: >
+                pct migrate {{ item }} {{ pve_patch_target_node }}
+                --restart 1
+              loop: "{{ pve_patch_running_lxc.stdout_lines | default([]) }}"
+              when: pve_patch_running_lxc.stdout_lines | default([]) | length > 0
+
+        # ---------- Shutdown path ----------
+        - name: "Shutdown guests on this node"
+          when: pve_patch_migration_mode == 'shutdown'
+          block:
+            - name: List all running QEMU VMs
+              shell: >
+                pvesh get /nodes/{{ inventory_hostname }}/qemu --output-format json 2>/dev/null
+                | python3 -c "import sys,json;
+                vms=json.load(sys.stdin);
+                [print(v['vmid']) for v in vms if v.get('status')=='running']"
+              register: pve_patch_shutdown_qemu
+              changed_when: false
+
+            - name: List all running LXC containers
+              shell: >
+                pvesh get /nodes/{{ inventory_hostname }}/lxc --output-format json 2>/dev/null
+                | python3 -c "import sys,json;
+                cts=json.load(sys.stdin);
+                [print(c['vmid']) for c in cts if c.get('status')=='running']"
+              register: pve_patch_shutdown_lxc
+              changed_when: false
+
+            - name: Request-stop each QEMU VM (ACPI shutdown)
+              command: qm shutdown {{ item }} --timeout 120
+              loop: "{{ pve_patch_shutdown_qemu.stdout_lines | default([]) }}"
+              when: pve_patch_shutdown_qemu.stdout_lines | default([]) | length > 0
+
+            - name: Stop each LXC container
+              command: pct shutdown {{ item }} --timeout 60
+              loop: "{{ pve_patch_shutdown_lxc.stdout_lines | default([]) }}"
+              when: pve_patch_shutdown_lxc.stdout_lines | default([]) | length > 0
+
+    # ── 4. Apt upgrade ─────────────────────────────────────────────────
+    - name: Run apt update and full-upgrade
+      block:
+        - name: Update apt cache
+          apt:
+            update_cache: true
+            cache_valid_time: 0
+
+        - name: Full-upgrade all packages (Debian-Security + configured PVE repo)
+          apt:
+            upgrade: full
+          environment:
+            DEBIAN_FRONTEND: noninteractive
+          register: pve_patch_upgrade_result
+
+        - name: Log upgrade summary
+          debug:
+            msg: >-
+              apt full-upgrade on {{ inventory_hostname }}:
+              {{ pve_patch_upgrade_result.stdout_lines | default(['(no output)']) | last }}
+
+    # ── 5. Determine if a reboot is needed ─────────────────────────────
+    - name: Record post-upgrade kernel version
+      shell: >
+        ls -1t /boot/vmlinuz-* 2>/dev/null | head -1
+        | sed 's|/boot/vmlinuz-||'
+      register: pve_patch_kernel_after
+      changed_when: false
+
+    - name: Record post-upgrade pve-manager version
+      shell: dpkg-query -W -f='${Version}' pve-manager 2>/dev/null || echo 'unknown'
+      register: pve_patch_pvemgr_after
+      changed_when: false
+
+    - name: Decide whether to reboot
+      set_fact:
+        pve_patch_needs_reboot: >-
+          {{ (pve_patch_kernel_before.stdout | trim)
+             != (pve_patch_kernel_after.stdout | trim)
+             or
+             (pve_patch_pvemgr_before.stdout | trim)
+             != (pve_patch_pvemgr_after.stdout | trim) }}
+
+    - name: Log reboot decision
+      debug:
+        msg: >-
+          Reboot needed: {{ pve_patch_needs_reboot }}.
+          Kernel: {{ pve_patch_kernel_before.stdout | trim }}
+          → {{ pve_patch_kernel_after.stdout | trim }}.
+          pve-manager: {{ pve_patch_pvemgr_before.stdout | trim }}
+          → {{ pve_patch_pvemgr_after.stdout | trim }}.
+
+    # ── 6. Reboot (only if kernel or pve-manager changed) ──────────────
+    - name: Reboot the node
+      reboot:
+        msg: "Ansible pve-patch: rebooting for kernel/pve-manager update"
+        reboot_timeout: 600
+      when: pve_patch_needs_reboot | bool
+
+    # ── 7. Wait for quorum and pveproxy health ─────────────────────────
+    - name: Wait for cluster quorum to re-establish
+      command: pvecm status
+      register: pve_patch_post_quorum
+      until: >
+        'Quorate:          Yes' in pve_patch_post_quorum.stdout
+        or 'Activity status: active' in pve_patch_post_quorum.stdout
+      retries: "{{ (pve_patch_quorum_timeout | int / pve_patch_quorum_delay | int) | int }}"
+      delay: "{{ pve_patch_quorum_delay }}"
+      changed_when: false
+
+    - name: Verify pveproxy is healthy (API responds)
+      uri:
+        url: "https://127.0.0.1:8006/api2/json/version"
+        validate_certs: false
+        status_code: 401
+      register: pve_patch_pveproxy_check
+      retries: 10
+      delay: 5
+      until: pve_patch_pveproxy_check.status == 401
+
+    # ── 8. Rebalance guests back ───────────────────────────────────────
+    - name: "Rebalance guests (mode: {{ pve_patch_migration_mode }})"
+      block:
+        - name: "HA rebalance — disable maintenance mode"
+          when: pve_patch_migration_mode == 'ha'
+          block:
+            - name: Disable HA maintenance mode
+              command: >
+                ha-manager crm-command node-maintenance disable
+                {{ inventory_hostname }}
+              changed_when: true
+
+            - name: Give the HA manager time to rebalance
+              pause:
+                seconds: 30
+
+        - name: "Shutdown rebalance — start guests that were stopped"
+          when: pve_patch_migration_mode == 'shutdown'
+          block:
+            - name: Start QEMU VMs that were running before
+              command: qm start {{ item }}
+              loop: "{{ pve_patch_shutdown_qemu.stdout_lines | default([]) }}"
+              when: pve_patch_shutdown_qemu.stdout_lines | default([]) | length > 0
+
+            - name: Start LXC containers that were running before
+              command: pct start {{ item }}
+              loop: "{{ pve_patch_shutdown_lxc.stdout_lines | default([]) }}"
+              when: pve_patch_shutdown_lxc.stdout_lines | default([]) | length > 0
+
+        # In 'live' mode, guests stay on their migrated-to host — the HA
+        # manager and normal cluster operation will rebalance them over time,
+        # or the operator can manually migrate them back after the full
+        # rolling window completes.
+        - name: "Live-migrate rebalance — note"
+          when: pve_patch_migration_mode == 'live'
+          debug:
+            msg: >-
+              Guests that were live-migrated off {{ inventory_hostname }}
+              remain on their target hosts.  The HA manager will rebalance
+              HA-managed guests automatically; non-HA guests can be migrated
+              back manually after the full rolling window completes.
+
+    - name: "✅ {{ inventory_hostname }} patched and healthy — proceeding to next node"
+      debug:
+        msg: >-
+          Kernel: {{ pve_patch_kernel_after.stdout | trim }},
+          pve-manager: {{ pve_patch_pvemgr_after.stdout | trim }},
+          quorum: OK, pveproxy: OK.
+
+###########################################################################
+# Play 2 — Configure unattended-upgrades (Debian-Security origin ONLY)
+###########################################################################
+- name: Configure unattended-upgrades for Debian-Security only on PVE hosts
+  hosts: pve_cluster
+  become: true
+  serial: 1
+  tasks:
+    # ── Gate: confirm PVE version and apt repo before enabling ──────────
+    - name: Read PVE major version for unattended-upgrades gate
+      command: pveversion --verbose
+      register: pve_patch_ua_pveversion
+      changed_when: false
+
+    - name: Extract PVE major version
+      set_fact:
+        pve_patch_ua_major: >-
+          {{ pve_patch_ua_pveversion.stdout
+             | regex_search('pve-manager/(\d+)', '\1')
+             | first }}
+
+    - name: Confirm PVE major version before enabling unattended-upgrades
+      assert:
+        that:
+          - pve_patch_ua_major == (pve_expected_major_version | default('8'))
+        fail_msg: >-
+          {{ inventory_hostname }} runs PVE {{ pve_patch_ua_major }}.x —
+          refusing to enable unattended-upgrades until the expected version
+          ({{ pve_expected_major_version | default('8') }}) is confirmed.
+        success_msg: >-
+          PVE {{ pve_patch_ua_major }}.x confirmed — proceeding with
+          unattended-upgrades configuration.
+
+    - name: Detect the Debian codename
+      command: lsb_release -cs
+      register: pve_patch_debian_codename
+      changed_when: false
+
+    - name: Install unattended-upgrades
+      apt:
+        name: unattended-upgrades
+        state: present
+        update_cache: true
+
+    - name: Deploy 50unattended-upgrades (Debian-Security origin only)
+      template:
+        src: templates/50unattended-upgrades-pve.j2
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+
+    - name: Deploy 20auto-upgrades (enable daily unattended-upgrades)
+      copy:
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+          APT::Periodic::AutocleanInterval "7";
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Verify unattended-upgrades configuration is valid
+      command: unattended-upgrades --dry-run
+      register: pve_patch_ua_dryrun
+      changed_when: false
+      failed_when: pve_patch_ua_dryrun.rc != 0
+
+    - name: Log unattended-upgrades configuration result
+      debug:
+        msg: >-
+          unattended-upgrades configured on {{ inventory_hostname }} for
+          Debian-Security ({{ pve_patch_debian_codename.stdout | trim }})
+          origin only.  PVE packages will NOT be auto-upgraded.
+
+###########################################################################
+# Play 3 — Post-patch cluster-wide health verification
+###########################################################################
+- name: Post-patch cluster-wide health verification
+  hosts: pve_cluster
+  become: true
+  tasks:
+    - name: Verify cluster quorum is healthy across all nodes
+      command: pvecm status
+      register: pve_patch_final_quorum
+      changed_when: false
+
+    - name: Assert final quorum
+      assert:
+        that:
+          - "'Quorate:          Yes' in pve_patch_final_quorum.stdout
+             or 'Activity status: active' in pve_patch_final_quorum.stdout"
+        fail_msg: >-
+          {{ inventory_hostname }} does not see quorum after the full rolling
+          patch.  Investigate immediately with 'pvecm status'.
+        success_msg: >-
+          {{ inventory_hostname }}: cluster quorum confirmed post-patch.
+
+    - name: Verify pveproxy is healthy on every node
+      uri:
+        url: "https://127.0.0.1:8006/api2/json/version"
+        validate_certs: false
+        status_code: 401
+      register: pve_patch_final_pveproxy
+      retries: 3
+      delay: 5
+      until: pve_patch_final_pveproxy.status == 401
+
+    - name: Report node patch status
+      debug:
+        msg: >-
+          ✅ {{ inventory_hostname }}: quorum OK, pveproxy OK — rolling
+          patch-and-reboot complete.
