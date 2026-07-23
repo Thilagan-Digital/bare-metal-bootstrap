@@ -10,13 +10,25 @@
 ##
 ## Rules are evaluated top to bottom, first match wins: tailscale0 is fully
 ## trusted, trusted_lan_subnet keeps SSH open as a break-glass path if
-## Tailscale is ever down, and everything else (including
-## {{ pve_firewall_web_port }} on the physical NIC/vmbr0) falls through to
-## cluster.fw's policy_in: DROP. Corosync is NOT listed here — Proxmox's
-## firewall always permits corosync traffic between the nodes present in
-## corosync.conf, independent of these rules or policy_in.
+## Tailscale is ever down, sibling cluster nodes may reach {{ pve_firewall_web_port }} over the
+## LAN (see below), and everything else (including {{ pve_firewall_web_port }} from any other
+## LAN client) falls through to cluster.fw's policy_in: DROP. Corosync is NOT
+## listed here — Proxmox's firewall always permits corosync traffic between
+## the nodes present in corosync.conf, independent of these rules or policy_in.
+##
+## The per-node {{ pve_firewall_web_port }} ACCEPTs are REQUIRED, not a convenience: pveproxy
+## relays API-token requests for a resource on another node to that peer's
+## pveproxy over the peer's LAN (pmxcfs .members / corosync ring0) address.
+## Without them the relay hits the DROP and every cross-node API-token read
+## silently times out with HTTP 595 — which broke `terraform plan` (the
+## bpg/proxmox provider authenticates by token). The web UI stays hidden from
+## every non-node LAN client. Sourced from the pve_cluster inventory group so
+## it tracks node membership automatically.
 
 [RULES]
 IN ACCEPT -i {{ pve_firewall_tailscale_iface }}
 IN ACCEPT -p tcp -dport {{ pve_firewall_ssh_port }} -source {{ trusted_lan_subnet }}
+{% for pve_node in groups['pve_cluster'] | sort %}
+IN ACCEPT -p tcp -dport {{ pve_firewall_web_port }} -source {{ hostvars[pve_node].ansible_host | default(pve_node) }}
+{% endfor %}
 IN DROP -p tcp -dport {{ pve_firewall_web_port }}
