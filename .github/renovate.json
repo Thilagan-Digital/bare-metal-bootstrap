@@ -1,0 +1,30 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":pinDigests",
+    ":maintainLockFilesWeekly"
+  ],
+  "packageRules": [
+    {
+      "description": "Automerge patch, digest, pin, and lockfile maintenance updates",
+      "matchUpdateTypes": ["patch", "digest", "pin", "pinDigest", "lockFileMaintenance"],
+      "automerge": true
+    },
+    {
+      "description": "Group GitHub Actions updates",
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions"
+    },
+    {
+      "description": "Group Docker base images and compose pins",
+      "matchManagers": ["dockerfile", "docker-compose"],
+      "groupName": "docker-container-images"
+    },
+    {
+      "description": "Group minor and patch dependency updates",
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "non-major-dependencies"
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+# Dependabot configuration — CVE security backstop org-wide
 version: 2
 updates:
   - package-ecosystem: "github-actions"
