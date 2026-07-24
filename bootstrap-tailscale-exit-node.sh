@@ -110,7 +110,28 @@ else
   warn "ethtool not installed; skipping UDP GRO tuning"
 fi
 
-# 5. Best-effort hardening (non-fatal if the packages aren't available).
+# 5. Ensure exit-node egress survives firewall churn (best-effort, ufw only).
+# Where ufw is active its default FORWARD policy is DROP, so exit traffic is
+# only forwarded because Tailscale's own ts-forward chain ACCEPTs it *ahead*
+# of that drop. If ts-forward is ever flushed or reordered (a `ufw reload`, a
+# tailscaled restart), egress would fall through to the DROP. Adding an
+# explicit rule in ufw's own forward chain makes tunnel->WAN egress no longer
+# depend on ts-forward's position. Only the outbound direction is added:
+# return traffic is already covered by ufw's ESTABLISHED,RELATED forward
+# accept, and adding the reverse would let the internet initiate into tunnel
+# clients on an internet-facing box. No-op where ufw isn't installed/active.
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+  WAN_IFACE="$(ip -o route show default 2>/dev/null | awk '{print $5; exit}')"
+  if [ -n "$WAN_IFACE" ]; then
+    log "Allowing tailscale0 -> $WAN_IFACE forwarding in ufw (exit-node egress)..."
+    ufw route allow in on tailscale0 out on "$WAN_IFACE" \
+      || warn "could not add ufw route rule for exit-node egress"
+  else
+    warn "could not determine WAN interface; skipping ufw exit-node route rule"
+  fi
+fi
+
+# 6. Best-effort hardening (non-fatal if the packages aren't available).
 if command -v apt-get >/dev/null 2>&1; then
   log "Installing hardening packages (fail2ban, unattended-upgrades)..."
   export DEBIAN_FRONTEND=noninteractive
