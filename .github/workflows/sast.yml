@@ -1,0 +1,41 @@
+name: SAST (Semgrep)
+
+# Self-contained Semgrep OSS scan — part of the org-wide SAST rollout tracked in
+# Thilagan-Digital/system-docs-hub#104.
+#
+# Deliberately NOT calling the shared security-gate.yml reusable workflow here:
+# it lives in the private system-docs-hub repo and hardcodes self-hosted runners
+# for its jobs. This repo is public, so running a self-hosted-runner job on
+# `pull_request` from an external fork is exactly the arbitrary-code-execution
+# risk GitHub warns against for public repos, and a public caller invoking a
+# private repo's reusable workflow is unsupported besides. lint.yml already
+# sidesteps the runner issue by using ubuntu-latest for PR checks; this workflow
+# follows the same pattern rather than inheriting the reusable's self-hosted
+# requirement.
+#
+# continue-on-error stays true until a first-run false-positive baseline is
+# triaged, per #104's rollout guidance — not a required check on day one.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  semgrep:
+    name: Semgrep SAST Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Run Semgrep OSS
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: --config=auto
+        continue-on-error: true
