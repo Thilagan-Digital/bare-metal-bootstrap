@@ -1,0 +1,115 @@
+---
+# Installs interactive CLI tooling on a management/controller host — the
+# Ansible controller for this fleet (see bootstrap-ansible-controller.sh),
+# or any other host you use to operate the cluster day-to-day: Doppler,
+# Tailscale, GitHub CLI (gh), Node.js + the Claude Code CLI.
+#
+# Deliberately NOT part of site.yml's default pipeline (unlike 01-07): this
+# is optional, opt-in tooling for a human operator, not part of bringing a
+# cluster node into the fleet, so it targets its own [management_hosts]
+# inventory group rather than pve_cluster. Run it standalone against
+# whichever real hosts your private inventory puts in that group:
+#
+#   ansible-playbook -i private-inventory/hosts.ini playbooks/08-management-clis.yml
+#
+# Idempotent — every install is gated on a check task first, so a re-run
+# converges rather than reinstalling.
+#
+# Deliberately does NOT run `tailscale up`: joining the tailnet needs a
+# decision (authkey vs. interactive login) this generic playbook shouldn't
+# make on your behalf. bootstrap-node.sh / bootstrap-ansible-controller.sh
+# already cover that for hosts that need it; this only installs the binary
+# if it's somehow missing.
+- name: Install interactive management CLIs (Doppler, Tailscale, gh, Claude Code)
+  hosts: management_hosts
+  become: true
+  vars:
+    claude_npm_package: "@anthropic-ai/claude-code"
+
+  tasks:
+    # ── Doppler CLI ──────────────────────────────────────────────────────
+    - name: Check for Doppler CLI
+      command: doppler --version
+      register: doppler_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install Doppler CLI
+      shell: curl -fsSL https://cli.doppler.com/install.sh | sh
+      when: doppler_check.rc != 0
+
+    # ── Tailscale ────────────────────────────────────────────────────────
+    - name: Check for Tailscale
+      command: tailscale version
+      register: tailscale_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install Tailscale
+      shell: curl -fsSL https://tailscale.com/install.sh | sh
+      when: tailscale_check.rc != 0
+
+    # ── GitHub CLI (gh) ──────────────────────────────────────────────────
+    - name: Check for GitHub CLI
+      command: gh --version
+      register: gh_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install GitHub CLI
+      when: gh_check.rc != 0
+      block:
+        - name: Ensure /etc/apt/keyrings exists
+          file:
+            path: /etc/apt/keyrings
+            state: directory
+            mode: "0755"
+
+        - name: Add GitHub CLI apt signing key
+          get_url:
+            url: https://cli.github.com/packages/githubcli-archive-keyring.gpg
+            dest: /etc/apt/keyrings/githubcli-archive-keyring.gpg
+            mode: "0644"
+
+        - name: Add GitHub CLI apt repository
+          apt_repository:
+            repo: >-
+              deb [arch={{ ansible_architecture | replace('x86_64', 'amd64') }}
+              signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg]
+              https://cli.github.com/packages stable main
+            filename: github-cli
+            state: present
+
+        - name: Install gh package
+          apt:
+            name: gh
+            update_cache: true
+
+    # ── Node.js (Claude Code CLI's only prerequisite) ───────────────────
+    - name: Check for Node.js
+      command: node --version
+      register: node_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install Node.js LTS
+      when: node_check.rc != 0
+      block:
+        - name: Run the NodeSource LTS setup script
+          shell: curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+
+        - name: Install nodejs package
+          apt:
+            name: nodejs
+            update_cache: true
+
+    # ── Claude Code CLI ──────────────────────────────────────────────────
+    - name: Check for Claude Code CLI
+      command: claude --version
+      register: claude_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install Claude Code CLI
+      command: npm install -g {{ claude_npm_package }}
+      when: claude_check.rc != 0

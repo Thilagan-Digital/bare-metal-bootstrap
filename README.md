@@ -65,6 +65,7 @@ bare-metal-bootstrap/
 │   ├── 05-tls-cert.yml      # Trusted Tailscale TLS cert for the PVE API (pveproxy)
 │   ├── 06-pve-firewall.yml  # Lock pveproxy (8006) to tailscale0 via pve-firewall; assert corosync stays on the LAN
 │   ├── 07-pve-patch.yml     # Rolling patch-and-reboot + Debian-Security unattended-upgrades on PVE hosts
+│   ├── 08-management-clis.yml # Interactive CLIs (Doppler, Tailscale, gh, Claude Code) for an operator host — standalone, not in site.yml
 │   └── templates/
 │       ├── host.fw.j2
 │       ├── cluster.fw.j2
@@ -123,6 +124,17 @@ auto-dist-upgraded. Run it standalone for maintenance windows:
 ```bash
 ansible-playbook -i private-inventory/hosts.ini playbooks/07-pve-patch.yml \
   --ask-vault-pass
+```
+
+`08-management-clis.yml` installs interactive CLI tooling (Doppler,
+Tailscale, `gh`, Node.js + the Claude Code CLI) on whichever host(s) your
+private inventory puts in `[management_hosts]` — typically the same host as
+your Ansible controller, but it doesn't have to be a cluster member at all.
+Not imported by `site.yml`; it's opt-in operator tooling, not part of
+bringing a node into the fleet, so run it standalone:
+
+```bash
+ansible-playbook -i private-inventory/hosts.ini playbooks/08-management-clis.yml
 ```
 
 The playbooks are idempotent and each is independently re-runnable — a
