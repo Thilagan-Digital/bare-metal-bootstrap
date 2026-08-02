@@ -67,9 +67,18 @@ jobs:
       # the finding source for false-positive triage today.
       #
       # if: always() so a scan that exits non-zero on findings still uploads
-      # them; the pin matches the reusable's (system-docs-hub#379).
+      # them.
+      #
+      # Pinned to the commit SHA that v4.37.3 points at — the same version the
+      # reusable pins by tag (system-docs-hub#379), just at SHA granularity.
+      # Not a pre-emption of the org-wide SHA-pinning decision (#377 § 1),
+      # which stays open: this line is pinned because the upload it enables
+      # immediately flagged it as `github-actions-mutable-action-tag`, and
+      # resolving a finding on a line this very workflow introduced beats
+      # dismissing it. Whichever way § 1 lands, a SHA is not the wrong
+      # direction, and this file gets normalised with the rest either way.
       - name: Upload SARIF to GitHub Security
         if: always()
-        uses: github/codeql-action/upload-sarif@v4.37.3
+        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
         with:
           sarif_file: semgrep.sarif
