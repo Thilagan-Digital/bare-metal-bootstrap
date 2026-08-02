@@ -11,7 +11,8 @@ name: SAST (Semgrep)
 # private repo's reusable workflow is unsupported besides. lint.yml already
 # sidesteps the runner issue by using ubuntu-latest for PR checks; this workflow
 # follows the same pattern rather than inheriting the reusable's self-hosted
-# requirement.
+# requirement. ubuntu-latest is free here precisely because the repo is public,
+# so this does not draw on the org's (zero) GitHub-hosted Actions budget.
 #
 # continue-on-error stays true until a first-run false-positive baseline is
 # triaged, per #104's rollout guidance — not a required check on day one.
@@ -22,7 +23,14 @@ on:
   pull_request:
     branches: [main]
 
+# `actions: read` is required by github/codeql-action/upload-sarif below: before
+# uploading it calls GET /repos/{owner}/{repo}/actions/runs/{run_id} to resolve
+# the analysis context (workflow path + ref). Repo visibility does not help here
+# — once a `permissions:` block is declared, every scope it omits is `none`, so
+# without this line the upload 403s with "Resource not accessible by
+# integration" (Thilagan-Digital/system-docs-hub#377 § 3).
 permissions:
+  actions: read
   contents: read
   security-events: write
 
@@ -34,8 +42,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # Not returntocorp/semgrep-action@v1, which this job used until #377: it
+      # runs `semgrep ci` and only ever printed findings to the Actions log —
+      # it emits no SARIF, so this repo had no upload step at all and its
+      # Security tab has always been empty. It is deprecated upstream besides.
+      # The native pip install mirrors what security-gate.yml does for the
+      # private repos, which keeps the two scan paths comparable when triaging.
+      - name: Install Semgrep
+        run: pip3 install --no-cache-dir --break-system-packages semgrep
+
+      # --sarif-output (not --sarif --output=) writes a SARIF copy for the
+      # upload step below while leaving the human-readable finding list on
+      # stdout — `--sarif --output=` alone suppresses it entirely, which makes
+      # triaging a first run from the Actions log impossible.
       - name: Run Semgrep OSS
-        uses: returntocorp/semgrep-action@v1
-        with:
-          config: --config=auto
+        run: semgrep scan --config=auto --sarif-output=semgrep.sarif --error
         continue-on-error: true
+
+      # This repo is public, so code scanning ingestion is available without
+      # GitHub Code Security — unlike the six private repos, where the same
+      # upload is refused with "Code Security must be enabled for this
+      # repository to use code scanning" (system-docs-hub#377 § 3). That makes
+      # this the one repo in the org whose Security tab can actually serve as
+      # the finding source for false-positive triage today.
+      #
+      # if: always() so a scan that exits non-zero on findings still uploads
+      # them; the pin matches the reusable's (system-docs-hub#379).
+      - name: Upload SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4.37.3
+        with:
+          sarif_file: semgrep.sarif
