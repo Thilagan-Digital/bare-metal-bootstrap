@@ -14,8 +14,13 @@ name: SAST (Semgrep)
 # requirement. ubuntu-latest is free here precisely because the repo is public,
 # so this does not draw on the org's (zero) GitHub-hosted Actions budget.
 #
-# continue-on-error stays true until a first-run false-positive baseline is
+# continue-on-error stayed true until a first-run false-positive baseline was
 # triaged, per #104's rollout guidance — not a required check on day one.
+# Triage is now done (Thilagan-Digital/system-docs-hub#377 § 2): the live
+# finding count is 0 as of this change, so `semgrep scan --error` below is now
+# a hard gate. This workflow does not call the reusable security-gate.yml (see
+# below), so it has no `baseline-clean` input to flip — `continue-on-error` on
+# the scan step is this repo's own equivalent lever, and this is that flip.
 
 on:
   push:
@@ -40,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # Not returntocorp/semgrep-action@v1, which this job used until #377: it
       # runs `semgrep ci` and only ever printed findings to the Actions log —
@@ -57,7 +62,6 @@ jobs:
       # triaging a first run from the Actions log impossible.
       - name: Run Semgrep OSS
         run: semgrep scan --config=auto --sarif-output=semgrep.sarif --error
-        continue-on-error: true
 
       # This repo is public, so code scanning ingestion is available without
       # GitHub Code Security — unlike the six private repos, where the same
