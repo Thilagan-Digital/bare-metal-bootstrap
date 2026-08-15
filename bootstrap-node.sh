@@ -78,7 +78,55 @@ sed -Ezi.bak "s/(Ext.Msg.show\(\{\s+title: gettext\('No valid sub)/void\(\{ \/\/
     /usr/share/javascript/proxmox-widget-toolkit/proxmoxlib.js || true
 systemctl restart pveproxy.service || true
 
-echo "==> 7. Bootstrapping the Tailscale client..."
+echo "==> 7. Pinning node DNS so Tailscale has a real upstream to inherit..."
+# MUST run BEFORE the Tailscale join below. tailscaled has no systemd-resolved
+# to talk to on a stock PVE install, so it falls back to its `direct` DNS
+# manager: it takes ownership of /etc/resolv.conf, writes MagicDNS
+# (100.100.100.100) in as the only nameserver, and forwards every non-ts.net
+# query to whatever upstreams it snapshotted from the file at takeover time.
+#
+# If that snapshot is empty — or, on a re-run, is a resolv.conf Tailscale
+# itself already wrote — tailscaled ends up with NO upstream and every public
+# name SERVFAILs while *.ts.net keeps resolving, logging "no upstream
+# resolvers set, returning SERVFAIL". That is exactly how prox10/prox20/prox30
+# ended up unable to resolve anything public on 2026-08-15 while their egress
+# was provably healthy. See homelab-infra's fault library entry
+# `tailscale-magicdns-no-upstream` for the detector and manual fix.
+#
+# Override the resolvers with NODE_DNS1 / NODE_DNS2 if this fleet uses its own.
+NODE_DNS1="${NODE_DNS1:-1.1.1.1}"
+NODE_DNS2="${NODE_DNS2:-8.8.8.8}"
+MAGICDNS="100.100.100.100"
+
+# A "real" upstream is any nameserver that is not MagicDNS itself. Counting
+# these is what makes the step idempotent AND makes it self-heal a poisoned
+# re-run, which a plain "file exists" guard would not.
+real_ns_count() {
+    grep -E '^nameserver[[:space:]]+' /etc/resolv.conf 2>/dev/null \
+      | awk '{print $2}' | grep -vc -e "^${MAGICDNS}$" -e '^fd7a:' || true
+}
+
+if [ "$(real_ns_count)" -gt 0 ]; then
+    echo "    node already has a real upstream resolver — leaving DNS alone"
+else
+    echo "    no real upstream resolver found (MagicDNS-only or empty) — pinning ${NODE_DNS1}, ${NODE_DNS2}"
+    cp -a /etc/resolv.conf "/root/resolv.conf.bak-$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+
+    # Persist through Proxmox's own tooling where it exists, so
+    # `pvesh get /nodes/<node>/dns` and the GUI agree with the file. Without
+    # this the next operator reads a MagicDNS-only config as if it were
+    # deliberate. pvesh needs a running pvedaemon, so fall back to the file.
+    node="$(hostname -s)"
+    if command -v pvesh >/dev/null 2>&1 \
+       && pvesh set "/nodes/${node}/dns" --dns1 "${NODE_DNS1}" --dns2 "${NODE_DNS2}" >/dev/null 2>&1; then
+        echo "    persisted via pvesh for node ${node}"
+    else
+        printf 'nameserver %s\nnameserver %s\n' "${NODE_DNS1}" "${NODE_DNS2}" > /etc/resolv.conf
+        echo "    pvesh unavailable — wrote /etc/resolv.conf directly"
+    fi
+fi
+
+echo "==> 8. Bootstrapping the Tailscale client..."
 curl -fsSL https://tailscale.com/install.sh | sh
 if [ -n "${TS_AUTHKEY:-}" ]; then
     echo "    auth key detected — registering non-interactively"
@@ -86,6 +134,19 @@ if [ -n "${TS_AUTHKEY:-}" ]; then
 else
     echo "    no auth key provided — starting interactive login"
     tailscale up
+fi
+
+echo "==> 9. Verifying DNS survived the Tailscale join..."
+# tailscaled has now rewritten /etc/resolv.conf to MagicDNS-only, which is
+# correct and expected. What matters is whether it can still FORWARD, so probe
+# a public name rather than inspecting the file. Non-fatal: a fresh node with
+# no tailnet DNS yet is not a reason to fail the whole bootstrap.
+if getent hosts deb.debian.org >/dev/null 2>&1; then
+    echo "    public name resolution OK"
+else
+    echo "    WARNING: cannot resolve a public name after the Tailscale join." >&2
+    echo "    Check: journalctl -u tailscaled | grep 'no upstream resolvers'" >&2
+    echo "    If that matches, see homelab-infra fault \`tailscale-magicdns-no-upstream\`." >&2
 fi
 
 echo "==> Node bootstrap complete! Ready for Ansible management."
