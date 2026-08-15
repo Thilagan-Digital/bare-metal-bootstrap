@@ -24,7 +24,14 @@ It separates one-time per-node OS prep from multi-node orchestration:
 - **Phase 1 — Zero-touch node bootstrap** ([`bootstrap-node.sh`](bootstrap-node.sh)):
   run locally on each fresh install to fix the DEB822 repos, silence the
   subscription nag, install the core virtualization + Ansible dependencies,
-  and join a Tailscale overlay network.
+  pin the node's DNS resolvers, and join a Tailscale overlay network.
+  The DNS step runs **before** the Tailscale join on purpose: a stock PVE
+  install has no `systemd-resolved`, so `tailscaled` uses its `direct` DNS
+  manager, takes over `/etc/resolv.conf`, and forwards public queries to
+  whatever upstreams it snapshotted at takeover. Join with nothing real in
+  that file and it has no upstream at all — every public name then fails
+  while `*.ts.net` keeps resolving. Override the defaults with `NODE_DNS1`
+  and `NODE_DNS2` if your fleet runs its own resolvers.
 - **Phase 2 — Cluster orchestration** ([`site.yml`](site.yml) + [`playbooks/`](playbooks/)):
   an Ansible suite run from a management machine to assemble the Corosync
   ring, join worker nodes over SSH, bind an external QDevice for quorum, and
@@ -148,7 +155,7 @@ self-contained and runs with a single anonymous `curl | bash`:
 
 | Script | What it does | What it leaves for your private automation |
 |---|---|---|
-| [`bootstrap-node.sh`](bootstrap-node.sh) | Prepares a bare Proxmox VE 9.x node (repos, nag, core deps, Tailscale) — Phase 1 above | Cluster formation, storage, VM/LXC provisioning (the Ansible pipeline / your IaC) |
+| [`bootstrap-node.sh`](bootstrap-node.sh) | Prepares a bare Proxmox VE 9.x node (repos, nag, core deps, DNS resolvers, Tailscale) — Phase 1 above | Cluster formation, storage, VM/LXC provisioning (the Ansible pipeline / your IaC) |
 | [`bootstrap-ansible-controller.sh`](bootstrap-ansible-controller.sh) | Installs `ansible-core`, `python3`, `openssh-client`, `python3-pexpect`, `git`, the Doppler CLI, joins Tailscale, generates this host's SSH keypair, and (given `ANSIBLE_TARGETS`) pushes that key to each managed host | Galaxy collections, inventory, playbooks, secrets |
 | [`bootstrap-nas-base.sh`](bootstrap-nas-base.sh) | Installs core apt/TLS packages + Docker, and joins Tailscale | Samba/NFS/Cockpit configuration, add-on containers |
 | [`bootstrap-tailscale-exit-node.sh`](bootstrap-tailscale-exit-node.sh) | Installs Tailscale, enables IP forwarding, advertises the host as an exit node, tunes UDP GRO throughput, installs fail2ban + unattended-upgrades | Tailscale ACLs, DNS filtering config, monitoring |
