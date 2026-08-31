@@ -64,12 +64,13 @@
           command: pveversion --verbose
           register: pve_patch_pveversion
           changed_when: false
+          check_mode: false
 
         - name: Extract the PVE major version number
           set_fact:
             pve_patch_running_major: >-
               {{ pve_patch_pveversion.stdout
-                 | regex_search('pve-manager/(\d+)', '\1')
+                 | regex_search('pve-manager:\s*(\d+)', '\1')
                  | first }}
 
         - name: Fail if PVE major version does not match the expected version
@@ -91,6 +92,7 @@
             | xargs grep -lE '(pve|proxmox)' 2>/dev/null || true
           register: pve_patch_apt_sources
           changed_when: false
+          check_mode: false
 
         - name: Log the configured PVE apt repositories
           debug:
@@ -104,6 +106,7 @@
           command: pvecm status
           register: pve_patch_pre_quorum
           changed_when: false
+          check_mode: false
 
         - name: Assert quorum is established
           assert:
@@ -120,11 +123,13 @@
       command: uname -r
       register: pve_patch_kernel_before
       changed_when: false
+      check_mode: false
 
     - name: Record pre-upgrade pve-manager version
       shell: dpkg-query -W -f='${Version}' pve-manager 2>/dev/null || echo 'unknown'
       register: pve_patch_pvemgr_before
       changed_when: false
+      check_mode: false
 
     # ── 3. Drain guests off this node ──────────────────────────────────
     - name: "Drain guests (mode: {{ pve_patch_migration_mode }})"
@@ -166,6 +171,7 @@
                 [print(v['vmid']) for v in vms if v.get('status')=='running']"
               register: pve_patch_running_qemu
               changed_when: false
+              check_mode: false
 
             - name: List running LXC containers on this node
               shell: >
@@ -175,6 +181,7 @@
                 [print(c['vmid']) for c in cts if c.get('status')=='running']"
               register: pve_patch_running_lxc
               changed_when: false
+              check_mode: false
 
             - name: Pick the first available target node for migration
               set_fact:
@@ -209,6 +216,7 @@
                 [print(v['vmid']) for v in vms if v.get('status')=='running']"
               register: pve_patch_shutdown_qemu
               changed_when: false
+              check_mode: false
 
             - name: List all running LXC containers
               shell: >
@@ -218,6 +226,7 @@
                 [print(c['vmid']) for c in cts if c.get('status')=='running']"
               register: pve_patch_shutdown_lxc
               changed_when: false
+              check_mode: false
 
             - name: Request-stop each QEMU VM (ACPI shutdown)
               command: qm shutdown {{ item }} --timeout 120
@@ -257,11 +266,13 @@
         | sed 's|/boot/vmlinuz-||'
       register: pve_patch_kernel_after
       changed_when: false
+      check_mode: false
 
     - name: Record post-upgrade pve-manager version
       shell: dpkg-query -W -f='${Version}' pve-manager 2>/dev/null || echo 'unknown'
       register: pve_patch_pvemgr_after
       changed_when: false
+      check_mode: false
 
     - name: Decide whether to reboot
       set_fact:
@@ -298,6 +309,7 @@
       retries: "{{ (pve_patch_quorum_timeout | int / pve_patch_quorum_delay | int) | int }}"
       delay: "{{ pve_patch_quorum_delay }}"
       changed_when: false
+      check_mode: false
 
     - name: Verify pveproxy is healthy (API responds)
       uri:
@@ -371,12 +383,13 @@
       command: pveversion --verbose
       register: pve_patch_ua_pveversion
       changed_when: false
+      check_mode: false
 
     - name: Extract PVE major version
       set_fact:
         pve_patch_ua_major: >-
           {{ pve_patch_ua_pveversion.stdout
-             | regex_search('pve-manager/(\d+)', '\1')
+             | regex_search('pve-manager:\s*(\d+)', '\1')
              | first }}
 
     - name: Confirm PVE major version before enabling unattended-upgrades
@@ -395,6 +408,7 @@
       command: lsb_release -cs
       register: pve_patch_debian_codename
       changed_when: false
+      check_mode: false
 
     - name: Install unattended-upgrades
       apt:
@@ -446,6 +460,7 @@
       command: pvecm status
       register: pve_patch_final_quorum
       changed_when: false
+      check_mode: false
 
     - name: Assert final quorum
       assert:
