@@ -4,7 +4,12 @@
     "config:recommended",
     ":maintainLockFilesWeekly"
   ],
+  "minimumReleaseAge": "7 days",
   "platformAutomerge": false,
+  "dependencyDashboard": false,
+  "vulnerabilityAlerts": {
+    "automerge": false
+  },
   "packageRules": [
     {
       "description": "Pin dependency digests for Docker base images, compose pins, and GitHub Actions (replaces the :pinDigests preset, which this Mend-hosted Renovate build cannot resolve — Thilagan-Digital/system-docs-hub#295)",
@@ -50,7 +55,7 @@
       "groupName": "non-major-dependencies"
     },
     {
-      "description": "First-party cross-repo reusables stay at @main: never pin or bump Thilagan-Digital/* refs (ADR-2026-PLATFORM-OPS-01 \u00a72.4, ADR-2026-PLATFORM-OPS-02 \u00a72.4). Kept LAST so it overrides the pinDigests and automerge rules above. minimumReleaseAge is inert on a disabled rule; it is here because semgrep's renovate-missing-minimum-release-age rule wants one per package-selecting rule",
+      "description": "First-party cross-repo reusables stay at @main: never pin or bump Thilagan-Digital/* refs (ADR-2026-PLATFORM-OPS-01 §2.4, ADR-2026-PLATFORM-OPS-02 §2.4). Kept LAST so it overrides the pinDigests and automerge rules above. minimumReleaseAge is inert on a disabled rule; it is here because semgrep's renovate-missing-minimum-release-age rule wants one per package-selecting rule",
       "matchManagers": [
         "github-actions"
       ],
