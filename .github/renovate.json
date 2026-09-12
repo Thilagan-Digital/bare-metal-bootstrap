@@ -2,28 +2,50 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended",
-    ":pinDigests",
     ":maintainLockFilesWeekly"
   ],
   "packageRules": [
     {
+      "description": "Pin dependency digests for Docker base images, compose pins, and GitHub Actions (replaces the :pinDigests preset, which this Mend-hosted Renovate build cannot resolve — Thilagan-Digital/system-docs-hub#295)",
+      "matchManagers": [
+        "dockerfile",
+        "docker-compose",
+        "github-actions"
+      ],
+      "pinDigests": true
+    },
+    {
       "description": "Automerge patch, digest, pin, and lockfile maintenance updates",
-      "matchUpdateTypes": ["patch", "digest", "pin", "pinDigest", "lockFileMaintenance"],
+      "matchUpdateTypes": [
+        "patch",
+        "digest",
+        "pin",
+        "pinDigest",
+        "lockFileMaintenance"
+      ],
       "automerge": true
     },
     {
       "description": "Group GitHub Actions updates",
-      "matchManagers": ["github-actions"],
+      "matchManagers": [
+        "github-actions"
+      ],
       "groupName": "github-actions"
     },
     {
       "description": "Group Docker base images and compose pins",
-      "matchManagers": ["dockerfile", "docker-compose"],
+      "matchManagers": [
+        "dockerfile",
+        "docker-compose"
+      ],
       "groupName": "docker-container-images"
     },
     {
       "description": "Group minor and patch dependency updates",
-      "matchUpdateTypes": ["minor", "patch"],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
       "groupName": "non-major-dependencies"
     }
   ]
