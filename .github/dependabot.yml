@@ -1,9 +1,0 @@
-# Dependabot configuration — CVE security backstop org-wide
-version: 2
-updates:
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
