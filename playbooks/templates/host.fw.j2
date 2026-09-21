@@ -9,8 +9,10 @@
 ## templates/cluster.fw.j2.
 ##
 ## Rules are evaluated top to bottom, first match wins: tailscale0 is fully
-## trusted, trusted_lan_subnet keeps SSH open as a break-glass path if
-## Tailscale is ever down, sibling cluster nodes may reach {{ pve_firewall_web_port }} over the
+## trusted, trusted_lan_subnet and each pve_firewall_extra_ssh_subnets entry
+## keep SSH open as a break-glass path if Tailscale is ever down (the extra
+## subnets are SSH-only sources — e.g. a LAN segment that is not corosync
+## ring0, so it cannot live in trusted_lan_subnet), sibling cluster nodes may reach {{ pve_firewall_web_port }} over the
 ## LAN (see below), and everything else (including {{ pve_firewall_web_port }} from any other
 ## LAN client) falls through to cluster.fw's policy_in: DROP. Corosync is NOT
 ## listed here — Proxmox's firewall always permits corosync traffic between
@@ -28,6 +30,9 @@
 [RULES]
 IN ACCEPT -i {{ pve_firewall_tailscale_iface }}
 IN ACCEPT -p tcp -dport {{ pve_firewall_ssh_port }} -source {{ trusted_lan_subnet }}
+{% for extra_subnet in pve_firewall_extra_ssh_subnets | default([]) %}
+IN ACCEPT -p tcp -dport {{ pve_firewall_ssh_port }} -source {{ extra_subnet }}
+{% endfor %}
 {% for pve_node in groups['pve_cluster'] | sort %}
 IN ACCEPT -p tcp -dport {{ pve_firewall_web_port }} -source {{ hostvars[pve_node].ansible_host | default(pve_node) }}
 {% endfor %}
