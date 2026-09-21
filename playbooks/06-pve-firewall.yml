@@ -55,6 +55,7 @@
           command: corosync-cfgtool -s
           register: pve_firewall_corosync_status
           changed_when: false
+          check_mode: false  # read-only; lets --check --diff run the rest
 
         - name: Extract this node's ring0 address
           # Matches a line like "addr = 192.168.0.67" under "LINK ID 0".

@@ -25,7 +25,11 @@
 ## silently times out with HTTP 595 — which broke `terraform plan` (the
 ## bpg/proxmox provider authenticates by token). The web UI stays hidden from
 ## every non-node LAN client. Sourced from the pve_cluster inventory group so
-## it tracks node membership automatically.
+## it tracks node membership automatically. The source is each node's
+## pve_node_lan_ip (its corosync-ring0 LAN IP), falling back to ansible_host —
+## set pve_node_lan_ip whenever ansible_host is an SSH alias or hostname, or the
+## rule would name a host instead of its LAN address. pve_firewall_extra_web_sources
+## lists any further LAN IPs that must reach {{ pve_firewall_web_port }} (non-inventory peers).
 
 [RULES]
 IN ACCEPT -i {{ pve_firewall_tailscale_iface }}
@@ -33,7 +37,10 @@ IN ACCEPT -p tcp -dport {{ pve_firewall_ssh_port }} -source {{ trusted_lan_subne
 {% for extra_subnet in pve_firewall_extra_ssh_subnets | default([]) %}
 IN ACCEPT -p tcp -dport {{ pve_firewall_ssh_port }} -source {{ extra_subnet }}
 {% endfor %}
+{% for web_source in pve_firewall_extra_web_sources | default([]) %}
+IN ACCEPT -p tcp -dport {{ pve_firewall_web_port }} -source {{ web_source }}
+{% endfor %}
 {% for pve_node in groups['pve_cluster'] | sort %}
-IN ACCEPT -p tcp -dport {{ pve_firewall_web_port }} -source {{ hostvars[pve_node].ansible_host | default(pve_node) }}
+IN ACCEPT -p tcp -dport {{ pve_firewall_web_port }} -source {{ hostvars[pve_node].pve_node_lan_ip | default(hostvars[pve_node].ansible_host | default(pve_node)) }}
 {% endfor %}
 IN DROP -p tcp -dport {{ pve_firewall_web_port }}
