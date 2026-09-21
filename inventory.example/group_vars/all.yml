@@ -17,6 +17,14 @@ trusted_lan_subnet: "10.10.10.0/24"
 pve_firewall_extra_ssh_subnets:
   - "10.10.20.0/24"
 
+# 8006 (pveproxy) is opened only to the cluster nodes' own LAN IPs, so nodes can
+# relay API-token requests to each other. Each node's source is its host var
+# `pve_node_lan_ip` (corosync ring0 IP), defaulting to ansible_host. If your
+# inventory's ansible_host is an SSH alias/hostname, set pve_node_lan_ip per host
+# in hosts.ini. pve_firewall_extra_web_sources adds further LAN IPs (e.g. a peer
+# that is not in pve_cluster). Optional; default [].
+# pve_firewall_extra_web_sources: ["10.10.10.99"]
+
 # Your tailnet's MagicDNS suffix (admin console -> DNS -> "tailnet name"),
 # used by playbooks/05-tls-cert.yml to build each node's own
 # <inventory_hostname>.<tailnet_domain> cert name. Requires Tailscale HTTPS
