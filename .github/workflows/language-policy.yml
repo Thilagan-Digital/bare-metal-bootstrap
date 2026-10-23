@@ -8,17 +8,20 @@ name: Language Policy
 # Copied verbatim from Thilagan-Digital/system-docs-hub@0d7e5650361b541e1dfede45fab10be248eddccb
 # .github/workflows/language-policy-guard.yml (the block between the begin/end markers).
 # When the Hub's denylist changes, update this copy in the same rollout (ADR §2.5).
+# The begin-marker comment below names a Hub-only test file (it is kept so the block stays
+# byte-identical); this repo has no copy of that test.
 #
 # Not a caller, for the same reasons as sast.yml: this repo is public, a public repo can't
 # call a private repo's reusable workflow, and fork PRs must not run on self-hosted runners.
 # So it runs on GitHub-hosted ubuntu-24.04, which is free for public repos.
 # Rolled out by Thilagan-Digital/system-docs-hub#1163.
 
+# pull_request is unfiltered, like the private repos' callers, so a PR into any branch is
+# checked. Fork PRs are safe here: GitHub-hosted runner, read-only token, no secrets.
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
