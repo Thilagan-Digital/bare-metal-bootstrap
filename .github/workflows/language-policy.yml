@@ -1,0 +1,141 @@
+name: Language Policy
+
+# Self-contained copy of the check in the Hub's reusable language-policy-guard.yml, which
+# enforces ADR-2026-PLATFORM-OPS-03 (first-party code is TypeScript/JavaScript, C#/.NET,
+# Python, SQL, Bash, PowerShell, Terraform/HCL or Go):
+# https://github.com/Thilagan-Digital/system-docs-hub/blob/main/docs/orchestration/adr-2026-platform-ops-03-first-party-language-policy.md
+#
+# Copied verbatim from Thilagan-Digital/system-docs-hub@0d7e5650361b541e1dfede45fab10be248eddccb
+# .github/workflows/language-policy-guard.yml (the block between the begin/end markers).
+# When the Hub's denylist changes, update this copy in the same rollout (ADR §2.5).
+# The begin-marker comment below names a Hub-only test file (it is kept so the block stays
+# byte-identical); this repo has no copy of that test.
+#
+# Not a caller, for the same reasons as sast.yml: this repo is public, a public repo can't
+# call a private repo's reusable workflow, and fork PRs must not run on self-hosted runners.
+# So it runs on GitHub-hosted ubuntu-24.04, which is free for public repos.
+# Rolled out by Thilagan-Digital/system-docs-hub#1163.
+
+# pull_request is unfiltered, like the private repos' callers, so a PR into any branch is
+# checked. Fork PRs are safe here: GitHub-hosted runner, read-only token, no secrets.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  language-policy:
+    name: Language policy (ADR-2026-PLATFORM-OPS-03)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Check tracked files against the allowed-language list
+        env:
+          # No vendored exceptions in this repo.
+          LANGUAGE_POLICY_EXCEPTIONS: ''
+        run: |
+          # --- language-policy:begin (extracted verbatim by .github/scripts/test/language-policy.test.js)
+          set -euo pipefail
+
+          # Not allowed (ADR-2026-PLATFORM-OPS-03 §2.2). Matched case-insensitively against
+          # the full path. Allowed languages are never listed: anything not matched here
+          # (docs, config, data, images) passes.
+          DENY_EXT='\.(php[0-9]?|phtml|phps|rb|erb|rake|gemspec|java|kt|kts|scala|sc|groovy|gradle|rs|swift|m|mm|c|cc|cpp|cxx|h|hh|hpp|hxx|ex|exs|erl|hrl|hs|lhs|ml|mli|fs|fsi|fsx|fsproj|vb|vbs|vbproj|clj|cljs|cljc|pl|pm|lua|r|dart|jl|nim|zig|cr|coffee)$'
+          DENY_MANIFEST='(^|/)(composer\.json|composer\.lock|gemfile|gemfile\.lock|rakefile|pom\.xml|build\.gradle(\.kts)?|settings\.gradle(\.kts)?|build\.sbt|cargo\.toml|cargo\.lock|package\.swift|mix\.exs|mix\.lock|rebar\.config|pubspec\.yaml|cmakelists\.txt|stack\.yaml|cpanfile)$'
+          # Interpreter names may carry a version suffix (php8.2, ruby3.3, perl5, lua5.4).
+          DENY_SHEBANG='^#!.*[/ ](php|ruby|perl|lua|rscript|elixir|escript|java|kotlin|scala|swift|runghc|dart)[0-9.]*([[:space:]]|$)'
+
+          fail() { echo "::error title=Language policy guard::$1"; exit 1; }
+
+          # Validate exceptions before using them, so a typo can never switch the gate off:
+          # a pathspec git rejects ('/abs', '../x') would make `git ls-files` fail, and a
+          # magic prefix (':(...)') would change what the exclusion means.
+          pathspec=(.)
+          stale=()
+          while IFS= read -r ex; do
+            ex="${ex%$'\r'}"
+            ex="${ex#"${ex%%[![:space:]]*}"}"; ex="${ex%"${ex##*[![:space:]]}"}"
+            [ -z "$ex" ] && continue
+            case "$ex" in \#*) continue ;; esac
+            case "$ex" in
+              /*|../*|*/../*|..|:*) fail "invalid exception '$ex': use a repo-relative glob (no leading '/', no '..', no ':' magic)" ;;
+            esac
+            pathspec+=(":(exclude,glob)$ex")
+            if [ -z "$(git ls-files -- ":(glob)$ex" | head -n1)" ]; then stale+=("$ex"); fi
+          done <<< "${LANGUAGE_POLICY_EXCEPTIONS:-}"
+
+          # Write the listings to files and check git's exit status: a process substitution
+          # hides it, and a failed listing must fail the check, not read as "no files".
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          git ls-files -z -- "${pathspec[@]}" > "$tmp/files" || fail "git ls-files failed — refusing to report compliance"
+          git ls-files -s -z -- "${pathspec[@]}" > "$tmp/staged" || fail "git ls-files -s failed — refusing to report compliance"
+          total=$(git ls-files | wc -l) || fail "git ls-files failed — refusing to report compliance"
+          scanned=$(tr -cd '\0' < "$tmp/files" | wc -c)
+          if [ "$total" -gt 0 ] && [ "$scanned" -eq 0 ]; then
+            fail "the exceptions exclude every tracked file ($total) — nothing would be checked"
+          fi
+
+          SEP=$'\x1f'
+          violations=()
+          while IFS= read -r -d '' f; do
+            lower=$(printf '%s' "$f" | tr '[:upper:]' '[:lower:]')
+            if [[ "$lower" =~ $DENY_EXT ]]; then
+              violations+=("$f${SEP}source file in a language outside the allowed list")
+            elif [[ "$lower" =~ $DENY_MANIFEST ]]; then
+              violations+=("$f${SEP}dependency manifest for a language outside the allowed list")
+            fi
+          done < "$tmp/files"
+
+          # Extensionless scripts: judge them by their shebang. Any file mode — Windows
+          # clients commit scripts as 100644, so the executable bit can't be relied on.
+          while IFS= read -r -d '' entry; do
+            f="${entry#*$'\t'}"
+            case "${entry%% *}" in 100644|100755) ;; *) continue ;; esac
+            case "${f##*/}" in *.*) continue ;; esac
+            [ -f "$f" ] || continue
+            # `read`, not `head | head`: under pipefail an early-exiting reader makes the
+            # writer die of SIGPIPE (141) and errexit would abort the whole check.
+            first=''
+            IFS= read -r first < "$f" || true
+            [[ "$first" == '#!'* ]] || continue
+            first=$(printf '%s' "${first:0:200}" | tr '[:upper:]' '[:lower:]')
+            if [[ "$first" =~ $DENY_SHEBANG ]]; then
+              violations+=("$f${SEP}script whose interpreter is outside the allowed list")
+            fi
+          done < "$tmp/staged"
+
+          # Annotation property values must escape % CR LF : , (GitHub workflow-command syntax).
+          annot_prop() { local s="${1//%/%25}"; s="${s//$'\r'/%0D}"; s="${s//$'\n'/%0A}"; s="${s//:/%3A}"; printf '%s' "${s//,/%2C}"; }
+
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          for ex in "${stale[@]+"${stale[@]}"}"; do
+            echo "::warning title=Stale language-policy exception::'$ex' matches no tracked file — remove it from the caller."
+          done
+
+          if [ "${#violations[@]}" -eq 0 ]; then
+            echo "Language policy: all $scanned checked file(s) are in allowed languages."
+            echo "### ✅ Language policy — compliant ($scanned files checked)" >> "$summary"
+            exit 0
+          fi
+
+          {
+            echo "### ❌ Language policy — ${#violations[@]} file(s) outside ADR-2026-PLATFORM-OPS-03"
+            echo
+            echo "Allowed for first-party code: TypeScript/JavaScript, C#/.NET, Python, SQL, Bash, PowerShell, Terraform/HCL, Go."
+            echo "Vendored upstream file? Add it to the caller's \`exceptions\` input with a comment (ADR §2.3)."
+            echo "New language? That needs an amendment to the ADR first (ADR §2.4)."
+            echo
+            for v in "${violations[@]}"; do echo "- \`${v%%"$SEP"*}\` — ${v#*"$SEP"}"; done
+          } >> "$summary"
+          for v in "${violations[@]}"; do
+            echo "::error file=$(annot_prop "${v%%"$SEP"*}"),title=Language policy (ADR-2026-PLATFORM-OPS-03)::${v#*"$SEP"}. See docs/orchestration/adr-2026-platform-ops-03-first-party-language-policy.md"
+          done
+          exit 1
+          # --- language-policy:end
