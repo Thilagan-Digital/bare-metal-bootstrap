@@ -4,13 +4,11 @@
   "enforcement": "active",
   "conditions": {
     "ref_name": {
-      "include": ["refs/heads/main"],
+      "include": ["~DEFAULT_BRANCH"],
       "exclude": []
     }
   },
   "rules": [
-    { "type": "deletion" },
-    { "type": "non_fast_forward" },
     {
       "type": "pull_request",
       "parameters": {
@@ -19,7 +17,25 @@
         "require_code_owner_review": false,
         "require_last_push_approval": false,
         "required_review_thread_resolution": true,
-        "allowed_merge_methods": ["squash", "merge", "rebase"]
+        "allowed_merge_methods": ["squash", "merge", "rebase"],
+        "required_reviewers": [],
+        "dismissal_restriction": {
+          "enabled": false,
+          "allowed_actors": []
+        },
+        "require_extra_approval_for_unattributed_changes": true
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": true,
+        "required_status_checks": [
+          { "context": "ShellCheck" },
+          { "context": "Ansible syntax check" },
+          { "context": "Language policy (ADR-2026-PLATFORM-OPS-03)" }
+        ]
       }
     }
   ],
