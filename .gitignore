@@ -21,3 +21,15 @@ vault.yml
 *~
 .idea/
 .vscode/
+
+# Per-user coding-agent state. Choosing "don't ask again" on a permission prompt
+# saves the approved command verbatim into settings.local.json, including any
+# token, key or connection string in it. Never commit these; the shared,
+# reviewed config is .claude/settings.json (tracked).
+.claude/settings.local.json
+.claude/*.local.json
+CLAUDE.local.md
+.mcp.local.json
+.codex/
+.gemini/settings.local.json
+.cursor/mcp.json
