@@ -89,8 +89,12 @@ bare-metal-bootstrap/
 **Phase 1 — on each fresh Proxmox node** (anonymous, no clone needed):
 
 ```bash
+# Type/paste the key at the silent prompt rather than on the command line:
+# `sudo TS_AUTHKEY=... bash` would put it in shell history and in sudo's own
+# log line, which records command-line variable assignments.
+read -rs TS_AUTHKEY && export TS_AUTHKEY
 curl -fsSL https://raw.githubusercontent.com/thilagan-digital/bare-metal-bootstrap/main/bootstrap-node.sh \
-  | sudo TS_AUTHKEY=tskey-auth-xxxx bash
+  | sudo --preserve-env=TS_AUTHKEY bash
 ```
 
 **Phase 2 — from a management machine**, against your own private inventory:
@@ -163,8 +167,12 @@ self-contained and runs with a single anonymous `curl | bash`:
 | [`bootstrap-exit-node-hardening.sh`](bootstrap-exit-node-hardening.sh) | Layers nftables tailnet-only port scoping + RFC1918 tunnel-ingress drop + CrowdSec (+ optional Suricata/Netdata) on an existing exit-node/AdGuard host | Tailscale ACLs (see [`tailscale-acl.example.hujson`](tailscale-acl.example.hujson)), fleet-specific port/CIDR tuning |
 
 ```bash
+# Type/paste the key at the silent prompt rather than on the command line:
+# `sudo TS_AUTHKEY=... bash` would put it in shell history and in sudo's own
+# log line, which records command-line variable assignments.
+read -rs TS_AUTHKEY && export TS_AUTHKEY
 curl -fsSL https://raw.githubusercontent.com/thilagan-digital/bare-metal-bootstrap/main/<script>.sh \
-  | sudo TS_AUTHKEY=tskey-auth-xxxx bash
+  | sudo --preserve-env=TS_AUTHKEY bash
 ```
 
 Omit `TS_AUTHKEY` for an interactive Tailscale login instead of a
