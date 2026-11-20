@@ -16,9 +16,11 @@
 #   Then run:
 #     ./bootstrap-tailscale-exit-node.sh
 #
-# One-liner (no clone needed — this repo is public):
+# One-liner (no clone needed — this repo is public). The key is read at a
+# silent prompt, not passed as `sudo TS_AUTHKEY=...`, which sudo would log:
+#   read -rs TS_AUTHKEY && export TS_AUTHKEY
 #   curl -fsSL https://raw.githubusercontent.com/thilagan-digital/bare-metal-bootstrap/main/bootstrap-tailscale-exit-node.sh \
-#     | sudo TS_AUTHKEY=tskey-auth-xxxx bash
+#     | sudo --preserve-env=TS_AUTHKEY bash
 #
 # After running: approve the exit node in the Tailscale admin console
 # (https://login.tailscale.com/admin/machines -> this node -> Edit route

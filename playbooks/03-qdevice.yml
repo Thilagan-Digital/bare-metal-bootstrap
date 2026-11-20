@@ -61,6 +61,10 @@
         responses:
           (?i)password: "{{ qdevice_root_password }}"
           (?i)are you sure you want to continue connecting: "yes"
+      # `responses` carries the QDevice host's root password and is not a
+      # no_log parameter of the expect module, so without this it lands in the
+      # node's syslog and in -v / failure output. Drop it temporarily to debug.
+      no_log: true
       register: qdevice_setup
       when: qdevice_registered.rc != 0 or qdevice_nodes_missing_cert | length > 0
       failed_when:
