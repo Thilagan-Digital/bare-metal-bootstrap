@@ -22,4 +22,8 @@
         responses:
           (?i)password: "{{ pve_root_password }}"
           (?i)are you sure you want to continue connecting: "yes"
+      # `responses` carries the root password and is not a no_log parameter of
+      # the expect module, so without this it lands in the node's syslog and in
+      # -v / failure output. Drop it temporarily to debug a failing join.
+      no_log: true
       when: member_status.rc != 0
