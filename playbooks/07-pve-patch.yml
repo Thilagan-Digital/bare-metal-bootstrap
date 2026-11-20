@@ -405,7 +405,10 @@
           unattended-upgrades configuration.
 
     - name: Detect the Debian codename
-      command: lsb_release -cs
+      # NOT `lsb_release -cs`: a fresh PVE 9 install does not ship lsb-release,
+      # so the gate failed on a new node (system-docs-hub#1217). The fact is
+      # the same value (/etc/os-release VERSION_CODENAME) with no package.
+      command: sh -c '. /etc/os-release && echo "$VERSION_CODENAME"'
       register: pve_patch_debian_codename
       changed_when: false
       check_mode: false

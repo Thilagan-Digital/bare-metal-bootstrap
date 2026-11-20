@@ -41,6 +41,14 @@
       register: cert_check
       changed_when: false
       failed_when: cert_check.stdout != "401"
+      # pveproxy was restarted a moment ago; the first probe can still see the
+      # old cert and fail with "unable to get local issuer certificate". Retry
+      # rather than fail a run that passes a few seconds later
+      # (system-docs-hub#1217). A cert that is genuinely wrong still fails
+      # after the last attempt.
+      until: cert_check.rc == 0 and cert_check.stdout == "401"
+      retries: 10
+      delay: 3
       # 401 = reachable + auth-required + cert trusted. Any TLS failure
       # (curl exits non-zero, or a non-401 code) fails here.
 

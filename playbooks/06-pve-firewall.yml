@@ -87,6 +87,13 @@
 
     - name: "Stage this node's host.fw RULES (inert until cluster.fw enable: 1)"
       block:
+        - name: Ensure host.fw exists before templating over it
+          # pmxcfs rejects the template module's metadata ops when the target
+          # does not exist yet (a node's first run), so create it first.
+          command: touch /etc/pve/local/host.fw
+          args:
+            creates: /etc/pve/local/host.fw
+
         - name: Template host.fw
           template:
             src: templates/host.fw.j2
@@ -106,6 +113,18 @@
         - name: Validate the ruleset compiles
           command: pve-firewall compile
           changed_when: false
+
+        # `ignore_errors` above hides the template's trailing-EPERM, and on a
+        # node's FIRST run pmxcfs can reject the copy before ANY content lands.
+        # An absent host.fw still compiles cleanly (no rules), so the gate above
+        # passes while cluster `policy_in: DROP` is live — that silently cut LAN
+        # SSH on prox40 (system-docs-hub#1217). So prove the rules are really in
+        # the file, rather than trusting either the module or the compile.
+        - name: Assert host.fw was written with this node's rules
+          command: grep -q -F -e 'IN ACCEPT -i {{ pve_firewall_tailscale_iface }}' /etc/pve/local/host.fw
+          changed_when: false
+          register: pve_firewall_host_fw_written
+          failed_when: pve_firewall_host_fw_written.rc != 0
       rescue:
         - name: Restore the previous host.fw from backup
           copy:
