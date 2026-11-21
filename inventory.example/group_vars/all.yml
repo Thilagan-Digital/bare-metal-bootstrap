@@ -38,6 +38,16 @@ tailnet_domain: "example.ts.net"
 pve_root_password: "{{ vault_pve_root_password }}"
 qdevice_root_password: "{{ vault_qdevice_root_password }}"
 
+# How playbooks/03-qdevice.yml gives a node that joined AFTER the QDevice was
+# set up its QDevice cert:
+#   "copy"  — copy an existing member's nssdb (same QNet CA and cluster cert).
+#             No SSH to the QDevice host. Run with a member that has a cert in
+#             the same run, e.g. --limit pve_cluster. Default.
+#   "setup" — re-run `pvecm qdevice setup --force`, which needs root SSH to
+#             the QDevice host (qdevice_root_password).
+# The very first QDevice setup always uses `pvecm qdevice setup`.
+# qdevice_backfill_method: "copy"
+
 # Cluster-wide shared storage tiers, added on the control node and propagated
 # to every member via pmxcfs. Point `server` at your NFS/SMB host.
 pve_storage_pools:

@@ -148,6 +148,17 @@ bringing a node into the fleet, so run it standalone:
 ansible-playbook -i private-inventory/hosts.ini playbooks/08-management-clis.yml
 ```
 
+**Adding a node to a running cluster (late joiner):** set its
+`pve_node_lan_ip` (the corosync ring0 LAN IP; 01/02 use it for `--link0`) and
+list it under `worker_nodes`, with an existing member as `control_node` —
+even if you want the new node to be `control_node` afterwards. Never run
+`01-cluster-init.yml` or `site.yml` with a not-yet-joined node as
+`control_node`: 01 would create a second cluster on it. Then run 02 and 03
+with the existing members included, e.g. `--limit pve_cluster`. 03 gives the
+new node its QDevice cert by copying an existing member's nssdb, so it needs
+no SSH to the QDevice host (see `qdevice_backfill_method` in
+`inventory.example/group_vars/all.yml`).
+
 The playbooks are idempotent and each is independently re-runnable — a
 partial or repeated run reconverges rather than erroring on what already
 exists.

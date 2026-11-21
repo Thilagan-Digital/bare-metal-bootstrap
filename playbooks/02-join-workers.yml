@@ -1,9 +1,30 @@
 ---
+# Joins every worker_nodes host to the cluster that control_node already runs.
+#
+# Addresses: both the join target and this node's --link0 are each node's
+# corosync ring0 LAN IP, `pve_node_lan_ip` (the same host var 06-pve-firewall
+# uses). Not ansible_default_ipv4: that is the default-route source address,
+# which on a dual-homed bridge (ring0 on one subnet, default route on another)
+# is the wrong subnet for corosync (system-docs-hub#1217, prox40 2026-11-19).
+# Without pve_node_lan_ip it falls back to ansible_default_ipv4 as before;
+# not to ansible_host, which may be a Tailscale address corosync must never use.
+#
+# Late joiner that is itself control_node: this play joins worker_nodes TO
+# control_node, so it cannot join a node your inventory lists as
+# control_node (e.g. a stateless node you picked to drive the cluster).
+# Never run 01-cluster-init.yml or site.yml with a not-yet-joined node as
+# control_node either: 01 would `pvecm create` a second, separate cluster on
+# it. For the join, list the new node under worker_nodes and an existing
+# member under control_node, run this playbook and 03-qdevice.yml, then move
+# the new node back to control_node if you want it there.
 - name: Join Worker Nodes to Cluster
   hosts: worker_nodes
   become: true
   vars:
-    control_ip: "{{ hostvars[groups['control_node'][0]]['ansible_default_ipv4']['address'] }}"
+    control_ip: >-
+      {{ hostvars[groups['control_node'][0]]['pve_node_lan_ip']
+         | default(hostvars[groups['control_node'][0]]['ansible_default_ipv4']['address']) }}
+    link0_ip: "{{ pve_node_lan_ip | default(ansible_default_ipv4.address) }}"
   tasks:
     - name: Check cluster membership
       command: pvecm status
@@ -18,7 +39,7 @@
       # password + host-key prompts. `--use_ssh` also needs this worker's root
       # able to SSH to the control node (key or password).
       expect:
-        command: "pvecm add {{ control_ip }} --link0 {{ ansible_default_ipv4.address }} --use_ssh"
+        command: "pvecm add {{ control_ip }} --link0 {{ link0_ip }} --use_ssh"
         responses:
           (?i)password: "{{ pve_root_password }}"
           (?i)are you sure you want to continue connecting: "yes"

@@ -10,7 +10,9 @@
       changed_when: false
 
     - name: Create cluster
+      # ring0 on the corosync LAN IP, not the default-route source address;
+      # see 02-join-workers.yml's header (system-docs-hub#1217).
       command: >
         pvecm create {{ cluster_name | default('pve-cluster') }}
-        --link0 {{ ansible_default_ipv4.address }}
+        --link0 {{ pve_node_lan_ip | default(ansible_default_ipv4.address) }}
       when: pvecm_status.rc != 0

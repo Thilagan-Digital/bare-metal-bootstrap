@@ -25,6 +25,16 @@
   hosts: pve_cluster
   become: true
   tasks:
+    # `pvecm qdevice setup` needs it on every member, and a node installed
+    # after the QDevice was set up doesn't have it (a fresh PVE install does
+    # not ship it), so its corosync-qdevice.service doesn't exist.
+    - name: Install the QDevice client
+      apt:
+        name: corosync-qdevice
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
     - name: Check for this node's QDevice NSS certificate db
       stat:
         path: /etc/corosync/qdevice/net/nssdb/cert9.db
@@ -37,13 +47,18 @@
     qdevice_nodes_missing_cert: >-
       {{ groups['pve_cluster']
          | map('extract', hostvars)
+         | selectattr('qdevice_nssdb', 'defined')
          | rejectattr('qdevice_nssdb.stat.exists')
          | map(attribute='inventory_hostname')
          | list }}
   tasks:
     - name: Register QDevice server (initial setup, or forced cert backfill)
       # The QDevice host (e.g. a NAS) must have corosync-qnetd installed and
-      # reachable over SSH. Requires `pexpect` on the control machine.
+      # reachable over SSH as root. Requires `pexpect` on the control machine.
+      #
+      # A late joiner's cert is backfilled by the next play instead (a copy
+      # from an existing member, no SSH to the QDevice host), unless
+      # qdevice_backfill_method is "setup", which uses the --force path below.
       #
       # `--force` is required to re-run this once a device is already
       # registered — without it, `pvecm qdevice setup` refuses outright. With
@@ -66,11 +81,115 @@
       # node's syslog and in -v / failure output. Drop it temporarily to debug.
       no_log: true
       register: qdevice_setup
-      when: qdevice_registered.rc != 0 or qdevice_nodes_missing_cert | length > 0
+      when: >-
+        qdevice_registered.rc != 0
+        or (qdevice_backfill_method | default('copy') == 'setup'
+            and qdevice_nodes_missing_cert | length > 0)
       failed_when:
         - qdevice_setup is failed
         - "'Qdevice already configured, must be removed before setting up new one!' not in qdevice_setup.stdout | default('')"
       changed_when: qdevice_setup is not skipped
+
+- name: Backfill a late joiner's QDevice cert from an existing member
+  # Every member's /etc/corosync/qdevice/net/nssdb holds the same QNet CA and
+  # the same cluster client cert + key, so a node that joined after the
+  # QDevice was set up can take a byte-copy of a member's nssdb. This needs
+  # no SSH to the QDevice host, which may not offer root SSH at all (a NAS
+  # reached as an unprivileged user) — the path `pvecm qdevice setup --force`
+  # can't take (system-docs-hub#1217; done by hand for prox40 2026-11-19).
+  #
+  # The files pass through the controller's temp dir (it already has root on
+  # every node) and are deleted at the end. Run the joiner together with at
+  # least one member that has a cert (e.g. --limit pve_cluster).
+  hosts: pve_cluster
+  become: true
+  tasks:
+    # Fresh state, not the earlier plays' facts: an initial setup in the play
+    # above has just issued certs to every node.
+    - name: Check if QDevice is configured (current, post-registration state)
+      command: grep -qE '^[[:space:]]*device[[:space:]]*\{' /etc/pve/corosync.conf
+      register: qdevice_configured_backfill
+      failed_when: false
+      changed_when: false
+
+    - name: Re-check for this node's QDevice NSS certificate db
+      stat:
+        path: /etc/corosync/qdevice/net/nssdb/cert9.db
+      register: qdevice_nssdb_now
+
+    - name: Copy a member's nssdb to this node
+      when:
+        - qdevice_backfill_method | default('copy') == 'copy'
+        - qdevice_configured_backfill.rc == 0
+        - not qdevice_nssdb_now.stat.exists
+      vars:
+        qdevice_cert_source: >-
+          {{ ansible_play_hosts
+             | map('extract', hostvars)
+             | selectattr('qdevice_nssdb_now.stat.exists')
+             | map(attribute='inventory_hostname')
+             | first | default('') }}
+      block:
+        - name: Require a member with a cert in this run
+          assert:
+            that: qdevice_cert_source | length > 0
+            fail_msg: >-
+              {{ inventory_hostname }} has no QDevice cert and no host in this
+              run has one to copy. Include an existing member, e.g.
+              --limit pve_cluster.
+            quiet: true
+
+        - name: List the source member's nssdb files
+          find:
+            paths: /etc/corosync/qdevice/net/nssdb
+            file_type: file
+          delegate_to: "{{ qdevice_cert_source }}"
+          register: qdevice_nssdb_files
+
+        - name: Create a controller temp dir for the copy
+          tempfile:
+            state: directory
+            suffix: .qdevice-nssdb
+          delegate_to: localhost
+          become: false
+          register: qdevice_nssdb_tmp
+
+        - name: Fetch the nssdb files from the source member
+          fetch:
+            src: "{{ item.path }}"
+            dest: "{{ qdevice_nssdb_tmp.path }}/"
+            flat: true
+          delegate_to: "{{ qdevice_cert_source }}"
+          loop: "{{ qdevice_nssdb_files.files }}"
+          loop_control:
+            label: "{{ item.path }}"
+
+        - name: Create this node's nssdb directory
+          file:
+            path: /etc/corosync/qdevice/net/nssdb
+            state: directory
+            owner: root
+            group: root
+            mode: "0700"
+
+        - name: Install the nssdb files on this node
+          copy:
+            src: "{{ qdevice_nssdb_tmp.path }}/{{ item.path | basename }}"
+            dest: "{{ item.path }}"
+            owner: root
+            group: root
+            mode: "{{ item.mode }}"
+          loop: "{{ qdevice_nssdb_files.files }}"
+          loop_control:
+            label: "{{ item.path }}"
+      always:
+        - name: Remove the controller temp dir
+          file:
+            path: "{{ qdevice_nssdb_tmp.path }}"
+            state: absent
+          delegate_to: localhost
+          become: false
+          when: qdevice_nssdb_tmp.path is defined
 
 - name: Ensure the QDevice client is enabled and running on every cluster node
   # `pvecm qdevice setup` distributes the cert but does not reliably leave
