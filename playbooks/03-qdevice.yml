@@ -12,6 +12,7 @@
       register: qdevice_registered
       failed_when: false
       changed_when: false
+      check_mode: false
 
 - name: Check each cluster node for its QDevice NSS certificate db
   # A node that joins the cluster (playbook 02) AFTER the QDevice was already
@@ -28,12 +29,20 @@
     # `pvecm qdevice setup` needs it on every member, and a node installed
     # after the QDevice was set up doesn't have it (a fresh PVE install does
     # not ship it), so its corosync-qdevice.service doesn't exist.
+    - name: Check whether the QDevice client is installed
+      ansible.builtin.command: dpkg-query -W -f=${Status} corosync-qdevice
+      register: qdevice_client_pkg
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    # Only touches apt (and its cache) on a node that lacks the package.
     - name: Install the QDevice client
-      apt:
+      ansible.builtin.apt:
         name: corosync-qdevice
         state: present
         update_cache: true
-        cache_valid_time: 3600
+      when: "'install ok installed' not in qdevice_client_pkg.stdout"
 
     - name: Check for this node's QDevice NSS certificate db
       stat:
@@ -98,98 +107,89 @@
   # reached as an unprivileged user) — the path `pvecm qdevice setup --force`
   # can't take (system-docs-hub#1217; done by hand for prox40 2026-11-19).
   #
-  # The files pass through the controller's temp dir (it already has root on
-  # every node) and are deleted at the end. Run the joiner together with at
-  # least one member that has a cert (e.g. --limit pve_cluster).
+  # The joiner pulls the nssdb straight from the source member over the
+  # cluster's own root SSH, so the private key never touches the controller.
+  # That needs root's known_hosts on the joiner to trust the source, which
+  # 02-join-workers.yml's host-key play sets up: run 02 first, and run this
+  # with at least one member that has a cert (e.g. --limit pve_cluster).
+  #
+  # The copy lands in a staging dir next to nssdb, is checked for both
+  # cert9.db and key4.db, and only then renamed into place, so an interrupted
+  # or partial copy never leaves a half-written nssdb behind.
   hosts: pve_cluster
   become: true
   tasks:
     # Fresh state, not the earlier plays' facts: an initial setup in the play
     # above has just issued certs to every node.
     - name: Check if QDevice is configured (current, post-registration state)
-      command: grep -qE '^[[:space:]]*device[[:space:]]*\{' /etc/pve/corosync.conf
+      ansible.builtin.command: grep -qE '^[[:space:]]*device[[:space:]]*\{' /etc/pve/corosync.conf
       register: qdevice_configured_backfill
       failed_when: false
       changed_when: false
+      check_mode: false
 
-    - name: Re-check for this node's QDevice NSS certificate db
-      stat:
-        path: /etc/corosync/qdevice/net/nssdb/cert9.db
-      register: qdevice_nssdb_now
+    - name: Check this node's nssdb for both the cert and the key db
+      ansible.builtin.stat:
+        path: "/etc/corosync/qdevice/net/nssdb/{{ item }}"
+      loop: [cert9.db, key4.db]
+      register: qdevice_nssdb_parts
 
-    - name: Copy a member's nssdb to this node
+    - name: Read this node's QDevice connection state
+      ansible.builtin.command: corosync-qdevice-tool -s
+      register: qdevice_tool_state
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Record whether this node has a complete cert and a live connection
+      ansible.builtin.set_fact:
+        qdevice_has_cert: "{{ qdevice_nssdb_parts.results | selectattr('stat.exists') | list | length == 2 }}"
+        qdevice_connected: >-
+          {{ (qdevice_nssdb_parts.results | selectattr('stat.exists') | list | length == 2)
+             and (qdevice_tool_state.stdout | default('')) is search('State:\s+Connected') }}
+
+    - name: Pull a member's nssdb onto this node
       when:
         - qdevice_backfill_method | default('copy') == 'copy'
         - qdevice_configured_backfill.rc == 0
-        - not qdevice_nssdb_now.stat.exists
+        - not qdevice_has_cert
       vars:
+        # Members whose client is Connected first: their nssdb is proven good.
         qdevice_cert_source: >-
-          {{ ansible_play_hosts
-             | map('extract', hostvars)
-             | selectattr('qdevice_nssdb_now.stat.exists')
-             | map(attribute='inventory_hostname')
+          {{ ((ansible_play_hosts | map('extract', hostvars)
+               | selectattr('qdevice_connected') | map(attribute='inventory_hostname') | list)
+              + (ansible_play_hosts | map('extract', hostvars)
+               | selectattr('qdevice_has_cert') | map(attribute='inventory_hostname') | list))
              | first | default('') }}
       block:
-        - name: Require a member with a cert in this run
-          assert:
+        - name: Require a member with a complete cert in this run
+          ansible.builtin.assert:
             that: qdevice_cert_source | length > 0
             fail_msg: >-
               {{ inventory_hostname }} has no QDevice cert and no host in this
-              run has one to copy. Include an existing member, e.g.
+              run has a complete one to copy. Include an existing member, e.g.
               --limit pve_cluster.
             quiet: true
 
-        - name: List the source member's nssdb files
-          find:
-            paths: /etc/corosync/qdevice/net/nssdb
-            file_type: file
-          delegate_to: "{{ qdevice_cert_source }}"
-          register: qdevice_nssdb_files
-
-        - name: Create a controller temp dir for the copy
-          tempfile:
-            state: directory
-            suffix: .qdevice-nssdb
-          delegate_to: localhost
-          become: false
-          register: qdevice_nssdb_tmp
-
-        - name: Fetch the nssdb files from the source member
-          fetch:
-            src: "{{ item.path }}"
-            dest: "{{ qdevice_nssdb_tmp.path }}/"
-            flat: true
-          delegate_to: "{{ qdevice_cert_source }}"
-          loop: "{{ qdevice_nssdb_files.files }}"
-          loop_control:
-            label: "{{ item.path }}"
-
-        - name: Create this node's nssdb directory
-          file:
-            path: /etc/corosync/qdevice/net/nssdb
-            state: directory
-            owner: root
-            group: root
-            mode: "0700"
-
-        - name: Install the nssdb files on this node
-          copy:
-            src: "{{ qdevice_nssdb_tmp.path }}/{{ item.path | basename }}"
-            dest: "{{ item.path }}"
-            owner: root
-            group: root
-            mode: "{{ item.mode }}"
-          loop: "{{ qdevice_nssdb_files.files }}"
-          loop_control:
-            label: "{{ item.path }}"
-      always:
-        - name: Remove the controller temp dir
-          file:
-            path: "{{ qdevice_nssdb_tmp.path }}"
-            state: absent
-          delegate_to: localhost
-          become: false
-          when: qdevice_nssdb_tmp.path is defined
+        - name: Copy the nssdb from the source member, staged, then move it into place
+          ansible.builtin.shell: |
+            set -euo pipefail
+            net=/etc/corosync/qdevice/net
+            mkdir -p "$net"
+            stage=$(mktemp -d "$net/.nssdb-stage.XXXXXX")
+            trap 'rm -rf "$stage"' EXIT
+            ssh -o BatchMode=yes -o ConnectTimeout=10 \
+              root@{{ (hostvars[qdevice_cert_source].ansible_host | default(qdevice_cert_source)) | quote }} \
+              tar -C "$net" -cf - nssdb | tar -C "$stage" -xpf -
+            test -s "$stage/nssdb/cert9.db"
+            test -s "$stage/nssdb/key4.db"
+            if [ -e "$net/nssdb" ]; then
+              mv "$net/nssdb" "$net/nssdb.incomplete.$(date +%s)"
+            fi
+            mv "$stage/nssdb" "$net/nssdb"
+          args:
+            executable: /bin/bash
+          changed_when: true
 
 - name: Ensure the QDevice client is enabled and running on every cluster node
   # `pvecm qdevice setup` distributes the cert but does not reliably leave
@@ -212,6 +212,7 @@
       register: qdevice_configured_now
       failed_when: false
       changed_when: false
+      check_mode: false
 
     - name: Enable and start corosync-qdevice
       systemd:
@@ -219,3 +220,52 @@
         enabled: true
         state: started
       when: qdevice_configured_now.rc == 0
+
+    # A copied or freshly issued nssdb is only proven once the client talks
+    # to qnetd; a bad one shows as `NR` in `pvecm status`, not as a failure.
+    - name: Wait for this node's QDevice client to reach Connected
+      ansible.builtin.command: corosync-qdevice-tool -s
+      register: qdevice_state_after
+      until: qdevice_state_after.stdout is search('State:\s+Connected')
+      retries: 12
+      delay: 5
+      changed_when: false
+      when:
+        - qdevice_configured_now.rc == 0
+        - not ansible_check_mode
+
+    # QDevice algorithm and votes are NOT re-evaluated when nodes join or
+    # leave (an odd node count with ffsplit, or lms's N-1 votes, stay as
+    # set up). Fail here, rather than at the next outage, if the cluster
+    # does not have every expected vote, the QDevice's included.
+    # Checked from every node, so each one's view of the votes is covered.
+    - name: Read the cluster's vote counts
+      ansible.builtin.command: pvecm status
+      register: qdevice_pvecm_votes
+      changed_when: false
+      check_mode: false
+      when: qdevice_configured_now.rc == 0
+
+    - name: Assert every expected vote is present, the QDevice's included
+      vars:
+        qdevice_votes_expected: "{{ qdevice_pvecm_votes.stdout | regex_search('Expected votes:\\s+(\\d+)', '\\1') | default(['0'], true) | first | int }}"
+        qdevice_votes_total: "{{ qdevice_pvecm_votes.stdout | regex_search('Total votes:\\s+(\\d+)', '\\1') | default(['0'], true) | first | int }}"
+        qdevice_votes_nodes: "{{ qdevice_pvecm_votes.stdout | regex_search('Nodes:\\s+(\\d+)', '\\1') | default(['0'], true) | first | int }}"
+      ansible.builtin.assert:
+        that:
+          - qdevice_pvecm_votes.stdout is search('Quorate:\s+Yes')
+          - qdevice_pvecm_votes.stdout is search('Flags:.*Qdevice')
+          - qdevice_votes_total | int == qdevice_votes_expected | int
+          - qdevice_votes_expected | int > qdevice_votes_nodes | int
+        fail_msg: >-
+          pvecm status shows {{ qdevice_votes_nodes }} nodes, expected votes
+          {{ qdevice_votes_expected }}, total votes {{ qdevice_votes_total }}.
+          Every node plus the QDevice should vote. The QDevice algorithm and
+          its votes are not re-evaluated when nodes change: after adding or
+          removing a node, check `pvecm status` and re-run
+          `pvecm qdevice setup` (with --force for an odd node count) if the
+          vote count is wrong.
+        success_msg: >-
+          {{ qdevice_votes_nodes }} nodes, {{ qdevice_votes_total }} of
+          {{ qdevice_votes_expected }} expected votes, QDevice voting.
+      when: qdevice_pvecm_votes is not skipped

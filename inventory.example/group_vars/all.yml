@@ -40,9 +40,11 @@ qdevice_root_password: "{{ vault_qdevice_root_password }}"
 
 # How playbooks/03-qdevice.yml gives a node that joined AFTER the QDevice was
 # set up its QDevice cert:
-#   "copy"  — copy an existing member's nssdb (same QNet CA and cluster cert).
-#             No SSH to the QDevice host. Run with a member that has a cert in
-#             the same run, e.g. --limit pve_cluster. Default.
+#   "copy"  — pull an existing member's nssdb (same QNet CA and cluster cert)
+#             straight from that member over the cluster's root SSH. No SSH to
+#             the QDevice host, and the key never reaches the controller. Run
+#             02 first (it sets up the members' host-key trust) and include a
+#             member that has a cert, e.g. --limit pve_cluster. Default.
 #   "setup" — re-run `pvecm qdevice setup --force`, which needs root SSH to
 #             the QDevice host (qdevice_root_password).
 # The very first QDevice setup always uses `pvecm qdevice setup`.

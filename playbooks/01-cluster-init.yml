@@ -2,17 +2,39 @@
 - name: Initialize Proxmox Corosync Cluster
   hosts: control_node
   become: true
+  vars:
+    link0_ip: "{{ pve_node_lan_ip | default(ansible_host, true) | default(inventory_hostname, true) }}"
   tasks:
     - name: Check existing cluster status
       command: pvecm status
       register: pvecm_status
+      check_mode: false
       failed_when: false
       changed_when: false
 
+    # ring0 on the corosync LAN IP (pve_node_lan_ip, falling back to
+    # ansible_host like templates/host.fw.j2), not the default-route source
+    # address; see 02-join-workers.yml's header (system-docs-hub#1217).
+    - name: Refuse a --link0 address that corosync cannot use
+      when: pvecm_status.rc != 0
+      ansible.builtin.assert:
+        that:
+          - link0_ip in ansible_facts.all_ipv4_addresses
+          - (link0_ip | ansible.utils.ipaddr('100.64.0.0/10') | default('', true)) == ''
+          - >-
+            trusted_lan_subnet | default('', true) | length == 0
+            or (link0_ip | ansible.utils.ipaddr(trusted_lan_subnet) | default('', true)) != ''
+        fail_msg: >-
+          --link0 for {{ inventory_hostname }} would be '{{ link0_ip }}'. It
+          must be one of this node's own addresses
+          ({{ ansible_facts.all_ipv4_addresses | join(', ') }}), outside
+          Tailscale's 100.64.0.0/10, and inside trusted_lan_subnet
+          ({{ trusted_lan_subnet | default('unset') }}). Set pve_node_lan_ip to
+          this node's corosync ring0 LAN IP.
+        success_msg: "--link0 {{ link0_ip }}"
+
     - name: Create cluster
-      # ring0 on the corosync LAN IP, not the default-route source address;
-      # see 02-join-workers.yml's header (system-docs-hub#1217).
       command: >
         pvecm create {{ cluster_name | default('pve-cluster') }}
-        --link0 {{ pve_node_lan_ip | default(ansible_default_ipv4.address) }}
+        --link0 {{ link0_ip }}
       when: pvecm_status.rc != 0
