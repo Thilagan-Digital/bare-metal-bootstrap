@@ -27,3 +27,48 @@
       # -v / failure output. Drop it temporarily to debug a failing join.
       no_log: true
       when: member_status.rc != 0
+
+# Root-to-root SSH host-key trust between every cluster member.
+#
+# `pvecm add` puts each node's key in the cluster-wide
+# /etc/pve/nodes/<node>/ssh_known_hosts, which pvecm and `qm migrate` use, but
+# NOT in root's ~/.ssh/known_hosts. So plain `ssh root@<peer>` from one node to
+# another fails "Host key verification failed." for any member that joined
+# after the others last traded keys by hand. Anything that SSHes between nodes
+# by name in BatchMode (health checks, ad-hoc migrations) then breaks for the
+# late joiner, in both directions (system-docs-hub#1241, prox40 2026-11-19).
+#
+# Each node's key is read from its own /etc/ssh over the already-authenticated
+# Ansible connection, not ssh-keyscan'd over the network, and written under the
+# peer's inventory name and its ansible_host. Runs on every member each time,
+# so a late joiner both learns the existing keys and teaches them its own.
+# A private inventory that wants regenerated keys to stay untrusted until a
+# reviewed edit can pin keys instead (homelab-infra roles/pve_peer_known_hosts).
+- name: Trust every cluster member's SSH host key on every other member
+  hosts: control_node:worker_nodes
+  become: true
+  tasks:
+    - name: Read this node's ed25519 host public key
+      ansible.builtin.slurp:
+        src: /etc/ssh/ssh_host_ed25519_key.pub
+      register: own_host_key
+
+    # One line per alias (inventory name, then ansible_host): known_hosts
+    # replaces by `name`, so a stale key under either alias — e.g. a
+    # replaced node reusing an old IP — is overwritten, not left beside it.
+    - name: Add each peer's host key to root's known_hosts
+      ansible.builtin.known_hosts:
+        name: "{{ item.1 }}"
+        key: "{{ item.1 }} {{ (hostvars[item.0].own_host_key.content | b64decode).split()[:2] | join(' ') }}"
+        path: /root/.ssh/known_hosts
+        state: present
+      loop: >-
+        {%- set out = [] -%}
+        {%- for peer in ansible_play_hosts if peer != inventory_hostname -%}
+        {%- for alias in [peer, hostvars[peer].ansible_host | default(peer)] | unique -%}
+        {%- set _ = out.append([peer, alias]) -%}
+        {%- endfor -%}
+        {%- endfor -%}
+        {{ out }}
+      loop_control:
+        label: "{{ item.1 }}"
