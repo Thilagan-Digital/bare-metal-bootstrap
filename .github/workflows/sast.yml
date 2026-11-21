@@ -27,6 +27,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Weekly, so `--config=auto` picks up newly published Semgrep rules even in a
+  # week with no merges. Staggered across repos so the scans don't queue behind
+  # each other (system-docs-hub docs/security-automation.md § Schedules).
+  schedule:
+    - cron: '19 7 * * 0'
+  workflow_dispatch:
 
 # `actions: read` is required by github/codeql-action/upload-sarif below: before
 # uploading it calls GET /repos/{owner}/{repo}/actions/runs/{run_id} to resolve
