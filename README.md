@@ -148,6 +148,31 @@ bringing a node into the fleet, so run it standalone:
 ansible-playbook -i private-inventory/hosts.ini playbooks/08-management-clis.yml
 ```
 
+**Adding a node to a running cluster (late joiner):** set its
+`pve_node_lan_ip` (the corosync ring0 LAN IP; 01/02 use it for `--link0`, and
+fall back to `ansible_host` like 06 does) and list it under `worker_nodes`,
+with an existing member as `control_node` — even if you want the new node to
+be `control_node` afterwards. Never run `01-cluster-init.yml` or `site.yml`
+with a not-yet-joined node as `control_node`: 01 would create a second
+cluster on it. 01 and 02 refuse a `--link0` that is not one of the node's
+own addresses, is a Tailscale address, or is outside the control node's
+subnet and `trusted_lan_subnet`.
+
+Then run 02 and 03 with the existing members included, e.g.
+`--limit pve_cluster`. 02's second play makes the members trust each other's
+SSH host keys; 03 relies on that to pull an existing member's QDevice nssdb
+onto the new node directly over the cluster's root SSH, so the cert's private
+key never passes through the controller and no SSH to the QDevice host is
+needed (see `qdevice_backfill_method` in `inventory.example/group_vars/all.yml`).
+03 then waits for each node's QDevice client to reach `Connected` and checks
+`pvecm status` for every expected vote.
+
+Upstream caveat: Proxmox does not re-evaluate the QDevice algorithm or its
+votes when nodes join or leave. After a join, check `pvecm status` (03 fails
+if total votes fall short of expected votes or the QDevice is not voting); an
+odd node count may need `pvecm qdevice setup --force` to move to `lms`, or
+back to `ffsplit` for an even one.
+
 The playbooks are idempotent and each is independently re-runnable — a
 partial or repeated run reconverges rather than erroring on what already
 exists.

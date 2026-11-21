@@ -1,15 +1,76 @@
 ---
+# Joins every worker_nodes host to the cluster that control_node already runs.
+#
+# Addresses: both the join target and this node's --link0 are each node's
+# corosync ring0 LAN IP, `pve_node_lan_ip`, falling back to ansible_host —
+# the same var and fallback templates/host.fw.j2 uses for 06's peer rules, so
+# the two can never disagree. Not ansible_default_ipv4: that is the
+# default-route source address, which on a dual-homed bridge (ring0 on one
+# subnet, default route on another) is the wrong subnet for corosync
+# (system-docs-hub#1217, prox40 2026-11-19). Because ansible_host may be a
+# Tailscale IP or an SSH alias, a pre-flight assert refuses a --link0 that is
+# not one of this node's own addresses, is in Tailscale's range, or is in
+# neither control_node's subnet nor trusted_lan_subnet.
+#
+# Late joiner that is itself control_node: this play joins worker_nodes TO
+# control_node, so it cannot join a node your inventory lists as
+# control_node (e.g. a stateless node you picked to drive the cluster).
+# Never run 01-cluster-init.yml or site.yml with a not-yet-joined node as
+# control_node either: 01 would `pvecm create` a second, separate cluster on
+# it. For the join, list the new node under worker_nodes and an existing
+# member under control_node, run this playbook and 03-qdevice.yml, then move
+# the new node back to control_node if you want it there.
 - name: Join Worker Nodes to Cluster
   hosts: worker_nodes
   become: true
   vars:
-    control_ip: "{{ hostvars[groups['control_node'][0]]['ansible_default_ipv4']['address'] }}"
+    control_host: "{{ groups['control_node'][0] }}"
+    control_ip: >-
+      {{ hostvars[control_host].pve_node_lan_ip
+         | default(hostvars[control_host].ansible_host, true)
+         | default(control_host, true) }}
+    link0_ip: "{{ pve_node_lan_ip | default(ansible_host, true) | default(inventory_hostname, true) }}"
   tasks:
     - name: Check cluster membership
       command: pvecm status
       register: member_status
+      check_mode: false
       failed_when: false
       changed_when: false
+
+    - name: Refuse a --link0 address that corosync cannot use
+      when: member_status.rc != 0
+      vars:
+        # This node's IPv4 addresses with their prefix, primary and secondary.
+        link0_own_cidrs: >-
+          {%- set out = [] -%}
+          {%- for i in ansible_facts.interfaces -%}
+          {%- set f = ansible_facts[i | replace('-', '_') | replace('.', '_')] | default({}) -%}
+          {%- for a in ([f.ipv4] if f.ipv4 is defined else []) + (f.ipv4_secondaries | default([])) -%}
+          {%- set _ = out.append(a.address ~ '/' ~ a.prefix) -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+        link0_net: >-
+          {{ link0_own_cidrs | select('match', '^' ~ (link0_ip | regex_escape) ~ '/')
+             | map('ansible.utils.ipaddr', 'network/prefix') | first | default('', true) }}
+      ansible.builtin.assert:
+        that:
+          - link0_ip in ansible_facts.all_ipv4_addresses
+          - (link0_ip | ansible.utils.ipaddr('100.64.0.0/10') | default('', true)) == ''
+          - >-
+            (link0_net | length > 0
+             and (control_ip | ansible.utils.ipaddr(link0_net) | default('', true)) != '')
+            or (trusted_lan_subnet | default('', true) | length > 0
+                and (link0_ip | ansible.utils.ipaddr(trusted_lan_subnet) | default('', true)) != '')
+        fail_msg: >-
+          --link0 for {{ inventory_hostname }} would be '{{ link0_ip }}' (join
+          target {{ control_ip }}). It must be one of this node's own addresses
+          ({{ ansible_facts.all_ipv4_addresses | join(', ') }}), outside
+          Tailscale's 100.64.0.0/10, and in control_node's subnet or in
+          trusted_lan_subnet ({{ trusted_lan_subnet | default('unset') }}). Set
+          pve_node_lan_ip to this node's corosync ring0 LAN IP.
+        success_msg: "--link0 {{ link0_ip }}, joining {{ control_ip }}"
 
     - name: Join cluster via SSH authentication
       # `ansible.builtin.expect` runs on the MANAGED node, so `pexpect` must be
@@ -18,7 +79,7 @@
       # password + host-key prompts. `--use_ssh` also needs this worker's root
       # able to SSH to the control node (key or password).
       expect:
-        command: "pvecm add {{ control_ip }} --link0 {{ ansible_default_ipv4.address }} --use_ssh"
+        command: "pvecm add {{ control_ip }} --link0 {{ link0_ip }} --use_ssh"
         responses:
           (?i)password: "{{ pve_root_password }}"
           (?i)are you sure you want to continue connecting: "yes"
