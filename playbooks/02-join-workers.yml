@@ -38,37 +38,67 @@
 # by name in BatchMode (health checks, ad-hoc migrations) then breaks for the
 # late joiner, in both directions (system-docs-hub#1241, prox40 2026-11-19).
 #
-# Each node's key is read from its own /etc/ssh over the already-authenticated
-# Ansible connection, not ssh-keyscan'd over the network, and written under the
-# peer's inventory name and its ansible_host. Runs on every member each time,
-# so a late joiner both learns the existing keys and teaches them its own.
-# A private inventory that wants regenerated keys to stay untrusted until a
-# reviewed edit can pin keys instead (homelab-infra roles/pve_peer_known_hosts).
+# Trust model: each node's key is read from its own /etc/ssh over the Ansible
+# connection, not ssh-keyscan'd. That is only as strong as the controller's
+# check of that connection, and this repo's ansible.cfg sets
+# host_key_checking = False, so it is trust-on-first-use, the same as the
+# "yes" this file already answers to pvecm's host-key prompt above.
+#
+# ADD-ONLY: an alias that already has an entry is left alone, even if the key
+# differs. That fixes a late joiner without ever re-trusting a regenerated key
+# on an existing member, and it never overwrites keys a private inventory pins
+# on purpose (homelab-infra roles/pve_peer_known_hosts). A key that really
+# changed must be replaced deliberately (ssh-keygen -R, or the pin).
 - name: Trust every cluster member's SSH host key on every other member
   hosts: control_node:worker_nodes
   become: true
   tasks:
+    # With --limit <new node> the play sees no peers and would report ok
+    # while doing nothing; the joiner and the existing members must run
+    # together (e.g. --limit control_node:worker_nodes).
+    - name: Refuse a limited run that leaves this node no peers
+      ansible.builtin.assert:
+        that: ansible_play_hosts | length > 1
+        fail_msg: >-
+          Only {{ inventory_hostname }} is in this run, so no host keys can be
+          traded. Re-run with the existing members included, e.g.
+          --limit control_node:worker_nodes.
+        quiet: true
+      when: ansible_limit is defined
+
     - name: Read this node's ed25519 host public key
       ansible.builtin.slurp:
         src: /etc/ssh/ssh_host_ed25519_key.pub
       register: own_host_key
 
-    # One line per alias (inventory name, then ansible_host): known_hosts
-    # replaces by `name`, so a stale key under either alias — e.g. a
-    # replaced node reusing an old IP — is overwritten, not left beside it.
-    - name: Add each peer's host key to root's known_hosts
-      ansible.builtin.known_hosts:
-        name: "{{ item.1 }}"
-        key: "{{ item.1 }} {{ (hostvars[item.0].own_host_key.content | b64decode).split()[:2] | join(' ') }}"
-        path: /root/.ssh/known_hosts
-        state: present
-      loop: >-
-        {%- set out = [] -%}
-        {%- for peer in ansible_play_hosts if peer != inventory_hostname -%}
-        {%- for alias in [peer, hostvars[peer].ansible_host | default(peer)] | unique -%}
-        {%- set _ = out.append([peer, alias]) -%}
-        {%- endfor -%}
-        {%- endfor -%}
-        {{ out }}
+    - name: Build the peer alias list (inventory name, then ansible_host)
+      ansible.builtin.set_fact:
+        peer_key_aliases: >-
+          {%- set out = [] -%}
+          {%- for peer in ansible_play_hosts if peer != inventory_hostname -%}
+          {%- for alias in [peer, hostvars[peer].ansible_host | default(peer)] | unique -%}
+          {%- set _ = out.append([peer, alias]) -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ out }}
+
+    - name: Find which aliases root already has a key for
+      ansible.builtin.command:
+        argv: [ssh-keygen, -F, "{{ item.1 }}", -f, /root/.ssh/known_hosts]
+      register: existing_peer_keys
+      changed_when: false
+      failed_when: false
+      loop: "{{ peer_key_aliases }}"
       loop_control:
         label: "{{ item.1 }}"
+
+    - name: Add each peer's host key where no entry exists yet
+      ansible.builtin.known_hosts:
+        name: "{{ item.item.1 }}"
+        key: "{{ item.item.1 }} {{ (hostvars[item.item.0].own_host_key.content | b64decode).split()[:2] | join(' ') }}"
+        path: /root/.ssh/known_hosts
+        state: present
+      when: item.rc != 0
+      loop: "{{ existing_peer_keys.results }}"
+      loop_control:
+        label: "{{ item.item.1 }}"
