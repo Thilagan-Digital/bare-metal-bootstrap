@@ -58,13 +58,13 @@ jobs:
       # Verify before extracting (new-leaf-platform#320). Piping a release
       # tarball straight into tar runs whatever arrives on the runner; pinning
       # the version alone doesn't help if the artefact behind the tag changes.
-      # Checksum from gitleaks_8.24.2_checksums.txt. When bumping
+      # Checksum from gitleaks_8.30.1_checksums.txt. When bumping
       # GITLEAKS_VERSION, update GITLEAKS_SHA256 in the same change.
       - name: Install gitleaks
         run: |
           set -euo pipefail
-          GITLEAKS_VERSION=8.24.2
-          GITLEAKS_SHA256=fa0500f6b7e41d28791ebc680f5dd9899cd42b58629218a5f041efa899151a8e
+          GITLEAKS_VERSION=8.30.1
+          GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
           TARBALL="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           curl -sSfL -o "$TARBALL" \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${TARBALL}"
